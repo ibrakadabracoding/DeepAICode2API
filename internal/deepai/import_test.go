@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// writeCredential 在指定目录下写一个桌面端凭据文件。
+// writeCredential writes a desktop credential file under the specified directory.
 func writeCredential(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -20,7 +20,7 @@ func writeCredential(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-// TestImportAllFromDesktopExplicitFile 覆盖「直接指到凭据文件」的最短路径。
+// TestImportAllFromDesktopExplicitFile covers the shortest path of "pointing directly at a credential file".
 func TestImportAllFromDesktopExplicitFile(t *testing.T) {
 	dir := t.TempDir()
 	path := writeCredential(t, dir, CredentialFile,
@@ -51,16 +51,16 @@ func TestImportAllFromDesktopExplicitFile(t *testing.T) {
 	}
 }
 
-// TestImportAllFromDesktopScansLayouts 覆盖 baseDir → userdata/dev 三种 secrets 目录，
-// 并验证同一个 Key 在多处出现时只导入一次。
+// TestImportAllFromDesktopScansLayouts covers the three secrets directories baseDir → userdata/dev,
+// and verifies that the same Key appearing in multiple places is imported only once.
 func TestImportAllFromDesktopScansLayouts(t *testing.T) {
 	base := t.TempDir()
 	sameKey := `{"apiKey":"sk-dup","username":"dup@example.com"}`
 
-	// 同一个 Key 故意写两份：userdata/secrets 与 secrets。
+	// The same Key is deliberately written twice: userdata/secrets and secrets.
 	writeCredential(t, filepath.Join(base, "userdata", "secrets"), CredentialFile, sameKey)
 	writeCredential(t, filepath.Join(base, "secrets"), CredentialFile, sameKey)
-	// dev/secrets 里是另一个账号。
+	// dev/secrets contains another account.
 	writeCredential(t, filepath.Join(base, "dev", "secrets"), CredentialFile,
 		`{"apiKey":"sk-dev","username":"dev@example.com"}`)
 
@@ -79,7 +79,7 @@ func TestImportAllFromDesktopScansLayouts(t *testing.T) {
 		t.Fatalf("导入的 Key 指纹重复: %v", keys)
 	}
 
-	// 显式指向 baseDir 与指向凭据文件同样有效。
+	// Explicitly pointing at baseDir is just as valid as pointing at a credential file.
 	if got, err := ImportAllFromDesktop(filepath.Join(base, "userdata", "secrets", CredentialFile)); err != nil || len(got) != 1 {
 		t.Fatalf("显式文件导入失败: %v / %d", err, len(got))
 	}
@@ -99,8 +99,8 @@ func TestImportAllFromDesktopMissing(t *testing.T) {
 	}
 }
 
-// TestImportAllFromDesktopCorruptFile 覆盖「文件在但解析失败」：
-// 应把最后一次错误抛出来，而不是伪装成“未找到”。
+// TestImportAllFromDesktopCorruptFile covers "file exists but parsing fails":
+// it should surface the last error instead of disguising it as "not found".
 func TestImportAllFromDesktopCorruptFile(t *testing.T) {
 	base := t.TempDir()
 	writeCredential(t, filepath.Join(base, "secrets"), CredentialFile, `{not json`)
@@ -111,7 +111,7 @@ func TestImportAllFromDesktopCorruptFile(t *testing.T) {
 	}
 }
 
-// TestImportSkipsFilesNamedLikeDirectories 确认目录名命中 CredentialFile 时不会 panic。
+// TestImportSkipsFilesNamedLikeDirectories confirms that no panic occurs when a directory name matches CredentialFile.
 func TestImportSkipsFilesNamedLikeDirectories(t *testing.T) {
 	base := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(base, "secrets", CredentialFile), 0o755); err != nil {
@@ -149,7 +149,7 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 		}
 	}
 
-	// 512 字节恰好是上限，应通过。
+	// 512 bytes is exactly the upper limit and should pass.
 	if _, err := AccountFromAPIKey(strings.Repeat("k", 512), "", "", false); err != nil {
 		t.Fatalf("512 字节 Key 应合法，得到 %v", err)
 	}
@@ -179,7 +179,7 @@ func TestAccountFromAPIKeyValidation(t *testing.T) {
 	if acct.ID == (&Account{ID: "x"}).ID {
 		_ = 0
 	}
-	// ID 必须是 8 字节随机 hex（16 字符）。
+	// The ID must be 8 random bytes in hex (16 characters).
 	if len(acct.ID) != 16 || strings.Trim(acct.ID, "0123456789abcdef") != "" {
 		t.Fatalf("ID = %q，期望 16 位小写 hex", acct.ID)
 	}
@@ -236,7 +236,7 @@ func TestAccountFromRegistration(t *testing.T) {
 		t.Fatalf("时间戳未写入: %+v", acct)
 	}
 
-	// 显式 Source 优先。
+	// An explicit Source takes precedence.
 	r.Source = "oauth"
 	if acct, _ := AccountFromRegistration(r); acct.Source != "oauth" {
 		t.Fatalf("Source = %q，期望 oauth", acct.Source)
@@ -289,7 +289,7 @@ func TestEnvAccount(t *testing.T) {
 		t.Fatalf("环境账号字段错误: %+v", acct)
 	}
 
-	// 非法 Key（含空格）应静默返回 nil，不阻塞网关启动。
+	// An invalid Key (containing spaces) should silently return nil and not block gateway startup.
 	t.Setenv("DEEPAI_API_KEY", "sk-with space")
 	if got := EnvAccount(); got != nil {
 		t.Fatalf("非法 Key 应返回 nil，得到 %+v", got)

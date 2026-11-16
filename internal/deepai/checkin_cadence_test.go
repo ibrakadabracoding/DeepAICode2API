@@ -10,10 +10,13 @@ import (
 	"time"
 )
 
-// nonceServer 每次 /theos 都下发一个**新** nonce（与上游真实行为一致）。
+// nonceServer issues a **new** nonce on every /theos call (matching real
+// upstream behavior).
 //
-// 这个细节是旧实现出错的根因：用「最新 nonce != 已回传 nonce」判断是否补签，
-// 会在每次回传后又变成 true，把 seconds/2 的节奏绕过成 checkInMinInterval。
+// This detail is the root cause of the old implementation's bug: deciding
+// whether to supplement a check-in via "latest nonce != acked nonce" becomes
+// true again after every relay, bypassing the seconds/2 cadence into
+// checkInMinInterval.
 func nonceServer(t *testing.T, hits *int) *Client {
 	t.Helper()
 	var mu sync.Mutex
@@ -38,16 +41,17 @@ func repeatHex(ch string) string {
 	return out
 }
 
-// TestEnsureCheckInFollowsHalfLife 固化桌面端节奏：
-// 回传完成后的 seconds/2（600s → 300s）内不再打扰上游；
-// 超过半衰期才补签一次。旧实现会每 30s 撞一次。
+// TestEnsureCheckInFollowsHalfLife pins down the desktop cadence:
+// within seconds/2 after a completed relay (600s → 300s) the upstream is not
+// disturbed; only past the half-life is another check-in performed. The old
+// implementation hit it every 30s.
 func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 	hits := 0
 	c := nonceServer(t, &hits)
 	acct := &Account{APIKey: "k-cadence"}
 	ctx := context.Background()
 
-	// 冷启动：拿到挑战但还没回传。
+	// Cold start: challenge received but not yet relayed.
 	if _, err := c.Theos(ctx, acct); err != nil {
 		t.Fatalf("Theos: %v", err)
 	}
@@ -55,7 +59,8 @@ func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 		t.Fatalf("首次 /theos 应调用 1 次，实际 %d", hits)
 	}
 
-	// 第一次补签：立刻回传（不能等半衰期，否则冷启动 5 分钟内都没签到）。
+	// First supplementary check-in: relay immediately (must not wait for the
+	// half-life, otherwise a cold start would go unsigned for 5 minutes).
 	if out := c.EnsureCheckIn(ctx, acct); !out.Attempted {
 		t.Fatal("冷启动后的第一次推理应补签")
 	}
@@ -63,7 +68,8 @@ func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 		t.Fatalf("补签应调用 /theos，实际 %d 次", hits)
 	}
 
-	// 半衰期内：把 attemptAt 拨到 1 分钟前（避开 30s 兜底），仍不应补签。
+	// Within the half-life: move attemptAt back by 1 minute (to avoid the 30s
+	// fallback); no supplementary check-in should happen.
 	st := c.stateFor(acct)
 	c.checkIns.mu.Lock()
 	st.attemptAt = time.Now().Add(-time.Minute)
@@ -75,7 +81,7 @@ func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 		t.Fatalf("半衰期内不应请求上游，实际 %d 次", hits)
 	}
 
-	// 超过半衰期（600s/2=300s）：应补签一次。
+	// Past the half-life (600s/2=300s): one supplementary check-in is expected.
 	c.checkIns.mu.Lock()
 	st.ackedAt = time.Now().Add(-301 * time.Second)
 	st.attemptAt = time.Now().Add(-time.Minute)
@@ -88,8 +94,9 @@ func TestEnsureCheckInFollowsHalfLife(t *testing.T) {
 	}
 }
 
-// TestEnsureCheckInBudget 固化「签到预算可调」：上游超时后立即放行推理，
-// 结果标记 TimedOut，且不影响后续请求继续补签。
+// TestEnsureCheckInBudget pins down "the check-in budget is adjustable":
+// once the upstream times out, inference is released immediately, the result
+// is marked TimedOut, and later requests still continue the catch-up.
 func TestEnsureCheckInBudget(t *testing.T) {
 	var hits atomic.Int64
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +124,8 @@ func TestEnsureCheckInBudget(t *testing.T) {
 	}
 }
 
-// TestSetCheckInBudgetNegative 覆盖越界值：负数归零（= 用默认 10s）。
+// TestSetCheckInBudgetNegative covers out-of-range values: negatives are
+// clamped to zero (= use the default 10s).
 func TestSetCheckInBudgetNegative(t *testing.T) {
 	c := NewClient()
 	c.SetCheckInBudget(-time.Second)

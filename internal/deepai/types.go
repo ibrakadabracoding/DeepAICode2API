@@ -1,9 +1,9 @@
-// Package deepai 实现 DeepAI Code 桌面端上游服务的逆向复刻。
+// Package deepai implements a reverse-engineered replica of the DeepAI Code desktop upstream service.
 //
-// 上游是 OpenAI 兼容的 HTTPS 接口：
+// The upstream is an OpenAI-compatible HTTPS interface:
 //
 //	POST https://api.deepai.org/deepai_code/chat/completions
-//	POST https://api.deepai.org/deepai_code/responses        （仅 openai-responses 模型）
+//	POST https://api.deepai.org/deepai_code/responses        (openai-responses models only)
 //	GET  https://api.deepai.org/deepai_code/models
 //	GET  https://api.deepai.org/deepai_code/theos
 //	POST https://api.deepai.org/deepai_code/web_search
@@ -11,20 +11,20 @@
 //	GET  https://api.deepai.org/get_usage_summary
 //	POST https://api.deepai.org/speech_to_text
 //
-// 鉴权使用桌面端登录后写入的 API Key（`Api-Key` 头），并附带
-// `X-DeepAI-Code-Theos` 车道版本、`X-DeepAI-Code-Instance` 进程实例、
-// `X-DeepAI-Code-Machine` 机器指纹；`/theos` 还要带签到 nonce 与心跳。
+// Authentication uses the API Key written after desktop login (the `Api-Key` header), along with
+// `X-DeepAI-Code-Theos` lane version, `X-DeepAI-Code-Instance` process instance,
+// `X-DeepAI-Code-Machine` machine fingerprint; `/theos` also requires a check-in nonce and heartbeat.
 //
-// 不实现的两块上游能力（刻意为之，见 docs/recon.md）：
-//   - 托管主机控制面 `/deepai_code/connect/*`（设备注册 / 远程主机 / TLS 中继）：
-//     它靠 Ed25519 设备身份 + X25519 交换密钥做客户端认证，服务的是桌面端
-//     “把这台机器变成受管主机”的功能，与推理复刻无关；
-//   - 赞助位渲染（`/gravity-*`）：属于 UI 变现链路，网关没有渲染面。
+// Two upstream capabilities are intentionally not implemented (see docs/recon.md):
+//   - Managed host control plane `/deepai_code/connect/*` (device registration / remote host / TLS relay):
+//     it uses Ed25519 device identity + X25519 key exchange for client authentication, serving the desktop's
+//     "turn this machine into a managed host" feature, unrelated to the inference replica;
+//   - Sponsored slot rendering (`/gravity-*`): part of the UI monetization chain; the gateway has no rendering surface.
 //
-// `/models` 与车道探测曾经**刻意不带任何凭据**（只看车道头 + 机器指纹）。
-// **2026-11-14 起失效**：不带 `Api-Key` 的 `/models` 一律 401 auth_required，
-// 带任意账号的 Key 才 200。所以这两条路径现在都要借一个账号的凭据
-// （见 `Client.FetchModels` / `DetectLane` 与 docs/recon.md §2）。
+// `/models` and lane detection used to **deliberately carry no credentials** (only the lane header + machine fingerprint).
+// **Stopped working as of 2026-11-14**: `/models` without `Api-Key` always returns 401 auth_required,
+// only with any account's Key does it return 200. So both paths now need to borrow an account's credentials
+// (see `Client.FetchModels` / `DetectLane` and docs/recon.md §2).
 package deepai
 
 import (
@@ -32,56 +32,56 @@ import (
 	"time"
 )
 
-// 上游协议常量。
+// Upstream protocol constants.
 const (
-	// LaneVersion 是本网关对齐的 Theos 计费车道版本。
+	// LaneVersion is the Theos billing lane version this gateway aligns with.
 	//
-	// 0.3.17 → 0.3.19 上游把车道从 2 提到 4；0.3.36（2026-11-13）提到 5；
-	// 0.3.37（2026-11-14）又提到 6：桌面端发 `X-DeepAI-Code-Theos: 6`，
-	// `/theos` 也回 `lane_version: 6`。车道不符时回 426
-	// lane_version_unsupported（"This version of DeepAI Code is no longer
-	// supported"）。2026-11-15 实测：`/models` 车道 6 → 200、7 → 426；
-	// `/theos` 车道 5 / 6 都 200、4 → 426；推理端点 5 / 6 都 200。
-	// 注意 `/models` 对旧车道很宽容（5 仍 200），所以探测必须从 6 开始试，
-	// 否则会一直钉在旧车道上（见 client.go 的 laneCandidates）。
+	// 0.3.17 → 0.3.19: upstream raised the lane from 2 to 4; 0.3.36 (2026-11-13) raised it to 5;
+	// 0.3.37 (2026-11-14) raised it to 6 again: the desktop sends `X-DeepAI-Code-Theos: 6`,
+	// `/theos` also returns `lane_version: 6`. On lane mismatch it returns 426
+	// lane_version_unsupported ("This version of DeepAI Code is no longer
+	// supported"). 2026-11-15 measured: `/models` lane 6 → 200, 7 → 426;
+	// `/theos` lanes 5 / 6 both 200, 4 → 426; inference endpoints 5 / 6 both 200.
+	// Note that `/models` is very lenient toward old lanes (5 still 200), so probing must start from 6,
+	// otherwise it will stay pinned to the old lane (see laneCandidates in client.go).
 	LaneVersion = "6"
 
-	// AppVersion 是上游据以识别客户端版本的应用版本号（心跳 v= 字段）。
+	// AppVersion is the application version number the upstream uses to identify the client version (the v= field in heartbeat).
 	//
-	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 逐项白盒核对。
-	// 0.3.36 → 0.3.37（2026-11-14 发布）的 `server.asar` 全量 diff 只有 27 个
-	// hunk，落在推理协议面上的**只有车道 5 → 6**：端点集合、5 个
-	// `X-DeepAI-Code-*` 头、实例号粒度、机器指纹、签到 / beacon 形态、聊天
-	// 请求体字段全部未变（pi 运行时仍 1.3.0）。其余差异是长会话压缩、
-	// 工具失败去重、Codex 审批、SQLite 索引与 `thinkingLevelMap`（后者只影响
-	// 桌面端下拉，不是 wire protocol）。
-	// 只有心跳里的版本号需要跟上，否则 /theos 上自报的是旧客户端。
+	// 0.3.20 → 0.3.30 → 0.3.32 → 0.3.35 → 0.3.36 → 0.3.37 verified item by item via white-box review.
+	// The full `server.asar` diff from 0.3.36 → 0.3.37 (released 2026-11-14) has only 27
+	// hunks, and the only one on the inference protocol surface is **lane 5 → 6**: the endpoint set, the 5
+	// `X-DeepAI-Code-*` headers, instance number granularity, machine fingerprint, check-in / beacon shape, and chat
+	// request body fields are all unchanged (the pi runtime is still 1.3.0). The remaining differences are long-session compression,
+	// tool failure deduplication, Codex approval, SQLite indexes, and `thinkingLevelMap` (the latter only affects
+	// the desktop dropdown, not the wire protocol).
+	// Only the version number in the heartbeat needs to be updated; otherwise /theos will report an old client.
 	AppVersion = "0.3.37"
 
-	// DesktopUserAgent 是桌面端访问赞助位渲染代理（/gravity-display-proxy）时
-	// 使用的 User-Agent。
+	// DesktopUserAgent is the User-Agent used when the desktop client accesses the sponsored-slot
+	// rendering proxy (/gravity-display-proxy).
 	//
-	// 注意：它**只**用在这一个路径上；/get_usage_summary 等其它根路径请求仍发
-	// Node fetch 的 `node`（见 deepai.Client.UsageSummary）。
+	// Note: it is used **only** on this one path; other root-path requests such as /get_usage_summary still send
+	// Node fetch's `node` (see deepai.Client.UsageSummary).
 	DesktopUserAgent = "DeepAI-Code"
 
-	// 请求头名称。
-	HeaderKeyName  = "Api-Key"             // 上游统一使用 Api-Key（大小写不敏感）
-	HeaderLane     = "X-DeepAI-Code-Theos" // 车道版本
+	// Request header name.
+	HeaderKeyName  = "Api-Key"             // The upstream uniformly uses Api-Key (case-insensitive)
+	HeaderLane     = "X-DeepAI-Code-Theos" // Lane version
 	HeaderMachine  = "X-DeepAI-Code-Machine"
 	HeaderAffinity = "X-Session-Affinity"
-	// HeaderInstance 是进程级随机实例号（16 字节随机数的 hex），桌面端每个
-	// 进程生成一次，随所有 JSON 请求发出。
+	// HeaderInstance is a process-level random instance ID (hex of a 16-byte random number); on desktop, each
+	// process generates it once and sends it with every JSON request.
 	HeaderInstance = "X-DeepAI-Code-Instance"
-	// HeaderCheckIn 是 /theos 响应下发的签到 nonce，仅 /theos 请求回传。
+	// HeaderCheckIn is the check-in nonce issued in the /theos response; it is sent back only on /theos requests.
 	HeaderCheckIn = "X-DeepAI-Code-Check-In"
-	// HeaderBeacon 是 /theos 请求上的客户端心跳。
+	// HeaderBeacon is the client heartbeat on /theos requests.
 	//
-	// 形态 `v=<版本>;up=<秒>;pi=<0|1>;focus=<0|1>`，其中 focus 只在
-	// 焦点状态已知时出现（见 deepaiBeacon）：网关没有窗口焦点，因此省略。
+	// Format `v=<version>;up=<seconds>;pi=<0|1>;focus=<0|1>`, where focus appears only
+	// when the focus state is known (see deepaiBeacon): the gateway has no window focus, so it is omitted.
 	HeaderBeacon = "X-DeepAI-Code-Beacon"
 
-	// 上游错误码。
+	// Upstream error codes.
 	CodeSessionBusy     = "session_busy"
 	CodeLaneUnsupported = "lane_version_unsupported"
 	CodeSocialLogin     = "social_login_required"
@@ -90,47 +90,47 @@ const (
 	CodeAuthRequired    = "auth_required"
 	CodeInvalidAPIKey   = "invalid_api_key"
 	CodeInvalidReq      = "invalid_request_error"
-	// CodeCheckInRefused 是签到被限流：账号本身没坏，推理仍可用，
-	// 但当天不能再签到 —— 会一直落在替身模型分支直到明天。
+	// CodeCheckInRefused means check-in is rate-limited: the account itself is fine and inference still works,
+	// but check-in cannot be done again today - it will keep falling into the stand-in model branch until tomorrow.
 	CodeCheckInRefused = "check_in_refused"
-	// CodeTheosExhausted 是「账号当日额度用完」：付费模型扣完 / 余额为负时
-	// 上游回 403，body 带 refresh_at（下一次发放时间）。
+	// CodeTheosExhausted means "the account's quota for the day is used up": when the paid model's deduction is complete / the balance is negative,
+	// the upstream returns 403 with refresh_at in the body (the next issuance time).
 	//
-	// 2026-11-13 实测（v0.1.3 时代）：balance=-7.58 时打 minimax-m3 得到
-	// {"error":{"code":"theos_exhausted","refresh_at":"…"}}。
+	// Measured on 2026-11-13 (v0.1.3 era): with balance=-7.58, hitting minimax-m3 yields
+	// {"error":{"code":"theos_exhausted","refresh_at":"..."}}.
 	//
-	// 它是账号级、当天自愈的终态：换号有意义，同一个号重试没有意义。
+	// It is an account-level terminal state that self-heals the same day: switching accounts makes sense, retrying the same account does not.
 	CodeTheosExhausted = "theos_exhausted"
-	// CodeNotDeepAICodeMsg 是上游拒绝“请求体不是桌面端形状”时的旧文案。
+	// CodeNotDeepAICodeMsg is the old message used when the upstream rejects "the request body is not desktop-shaped".
 	CodeNotDeepAICodeMsg = "not one deepai code sends"
-	// CodeNotAcceptedMsg 是同一个门槛的新文案（2026-11-13 实测）：
+	// CodeNotAcceptedMsg is the new message for the same threshold (measured on 2026-11-13):
 	// 400 {"error":{"message":"This request cannot be accepted.",
-	// "type":"invalid_request_error","code":"invalid_request_error"}}。
-	// 触发条件：UA=node + 已知客户端机器指纹 + 缺 system 消息（补上 system 即 200，
-	// 不需要 tools）；换未知机器指纹或换 UA 都不触发。两版文案都要当 BodyRejected。
+	// "type":"invalid_request_error","code":"invalid_request_error"}}.
+	// Trigger conditions: UA=node + known client machine fingerprint + missing system message (adding system yields 200,
+	// no tools needed); switching to an unknown machine fingerprint or changing the UA does not trigger it. Both message versions must be treated as BodyRejected.
 	CodeNotAcceptedMsg = "this request cannot be accepted"
 
-	// StatusBlocked 是账号级“上游策略拦截”状态（目前来源：social_login_required）。
+	// StatusBlocked is the account-level "upstream policy block" state (current source: social_login_required).
 	//
-	// 与普通错误不同：它不是网络/额度问题，换号重试也救不回来，
-	// 调度器应直接跳过，直到一次成功的 /theos 把它重新置回 ok。
+	// Unlike ordinary errors: it is not a network/quota problem, and retrying with another account will not fix it,
+	// the scheduler should skip it directly until a successful /theos sets it back to ok.
 	StatusBlocked = "blocked"
 
-	// StatusError 是“上一次调用失败”的状态。它能自愈：下一次成功，或
-	// 超过 ErrorStaleAfter 没再失败，就不再算异常（见 AccountReady）。
+	// StatusError is the "last call failed" state. It self-heals: on the next success, or
+	// if no further failure occurs after ErrorStaleAfter, it is no longer considered abnormal (see AccountReady).
 	StatusError = "error"
 
-	// ErrorStaleAfter 是“错误还能代表现状”的窗口。
+	// ErrorStaleAfter is the window in which an error can still represent the current state.
 	//
-	// 选 10 分钟的依据：上游 EOF / 429 “Too many requests today” 这类失败是
-	// 按次、成片出现的，而台号监控 / 真实流量通常 5 分钟内就会再打一次；
-	// 超过 10 分钟没再失败，就说明那是历史噪声，不该继续压在徽章上。
+	// Rationale for choosing 10 minutes: failures such as upstream EOF / 429 "Too many requests today"
+	// occur per request and in bursts, while account monitoring / real traffic usually hits again within 5 minutes;
+	// if no further failure occurs for more than 10 minutes, that indicates historical noise and it should no longer weigh on the badge.
 	ErrorStaleAfter = 10 * time.Minute
 
-	// 路径前缀。
+	// Path prefix.
 	ModelBasePath = "/deepai_code"
 
-	// 模型目录路径（相对 ModelBasePath）。
+	// Model catalog path (relative to ModelBasePath).
 	PathModels       = "/models"
 	PathChat         = "/chat/completions"
 	PathResponses    = "/responses"
@@ -140,12 +140,12 @@ const (
 	PathSessionsList = "/sessions/list"
 	PathSessionsGet  = "/sessions/get"
 	PathSessionsDel  = "/sessions/delete"
-	PathSessionsSave = "/sessions/save" // 0.3.20 新增：云端会话 / 偏好上传
+	PathSessionsSave = "/sessions/save" // Added in 0.3.20: cloud session / preference upload
 	PathSessionTurn  = "/session_turn"
 	PathSignIn       = "/desktop_auth/"
 	PathExchange     = "/desktop_auth/exchange/"
 
-	// 根路径（不在 /deepai_code 之下）。
+	// Root path (not under /deepai_code).
 	PathUsageSummary      = "/get_usage_summary"
 	PathSpeechToText      = "/speech_to_text"
 	PathAttachments       = "/chat_attachments/upload"
@@ -153,14 +153,14 @@ const (
 	PathGravityDisplay    = "/gravity-display-proxy"
 	PathGravityImpression = "/gravity-imp"
 
-	// DefaultOrigin 是生产环境上游地址。
+	// DefaultOrigin is the production upstream address.
 	DefaultOrigin = "https://api.deepai.org"
 
-	// DefaultModel 是目录不可用时的兜底模型。
+	// DefaultModel is the fallback model when the catalog is unavailable.
 	DefaultModel = "glm-5.3-flash"
 )
 
-// Model 是上游模型目录中的一个条目。
+// Model is an entry in the upstream model catalog.
 type Model struct {
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
@@ -169,15 +169,15 @@ type Model struct {
 	ContextWindow   int               `json:"contextWindow"`
 	MaxTokens       int               `json:"maxTokens"`
 	Premier         bool              `json:"premier,omitempty"`
-	API             string            `json:"api,omitempty"` // 空 = chat/completions；openai-responses = /responses
+	API             string            `json:"api,omitempty"` // empty = chat/completions; openai-responses = /responses
 	TheosPerRequest string            `json:"theosPerRequest,omitempty"`
 	TheosPerSecond  map[string]string `json:"theosPerSecond,omitempty"`
 }
 
-// IsResponses 报告该模型是否走 OpenAI Responses 端点。
+// IsResponses reports whether the model uses the OpenAI Responses endpoint.
 func (m Model) IsResponses() bool { return m.API == "openai-responses" }
 
-// Free 报告该模型是否免费（每次请求 0 Theos）。
+// Free reports whether the model is free (0 Theos per request).
 func (m Model) Free() bool {
 	if m.TheosPerRequest != "" {
 		return m.TheosPerRequest == "0" || m.TheosPerRequest == "0.0" || m.TheosPerRequest == "0.00"
@@ -185,7 +185,7 @@ func (m Model) Free() bool {
 	return !m.Premier
 }
 
-// SupportsImage 报告模型是否接受图片输入。
+// SupportsImage reports whether the model accepts image input.
 func (m Model) SupportsImage() bool {
 	for _, in := range m.Input {
 		if in == "image" {
@@ -195,23 +195,23 @@ func (m Model) SupportsImage() bool {
 	return false
 }
 
-// Credentials 是桌面端保存的 DeepAI 账号凭据。
+// Credentials are the DeepAI account credentials saved by the desktop app.
 type Credentials struct {
 	APIKey   string `json:"apiKey"`
 	Username string `json:"username"`
 	IsPro    bool   `json:"isPro"`
 }
 
-// CheckIn 是 /theos 响应里的签到挑战（成功与拒绝都会下发）。
+// CheckIn is the check-in challenge in the /theos response (issued on both success and rejection).
 //
-// 桌面端把它缓存起来，下一次 /theos 带 X-DeepAI-Code-Check-In: <nonce>，
-// 并按 seconds 的半个周期重新签到。
+// The desktop app caches it, and the next /theos request carries X-DeepAI-Code-Check-In: <nonce>,
+// Re check-in at half of the seconds period.
 type CheckIn struct {
 	Nonce   string `json:"nonce"`
 	Seconds int    `json:"seconds"`
 }
 
-// Valid 报告签到挑战是否可回传（nonce 为 32 位小写 hex，seconds 为正）。
+// Valid reports whether the check-in challenge can be sent back (nonce is 32 lowercase hex chars, seconds is positive).
 func (c *CheckIn) Valid() bool {
 	if c == nil || c.Seconds <= 0 || len(c.Nonce) != 32 {
 		return false
@@ -224,7 +224,7 @@ func (c *CheckIn) Valid() bool {
 	return true
 }
 
-// Allowance 是 /theos 返回的配额信息。
+// Allowance is the quota information returned by /theos.
 type Allowance struct {
 	Enabled     bool     `json:"enabled"`
 	Balance     string   `json:"balance,omitempty"`
@@ -235,7 +235,7 @@ type Allowance struct {
 	CheckedAt   int64    `json:"checked_at,omitempty"`
 }
 
-// Clone 返回配额信息的副本（nil 安全）。
+// Clone returns a copy of the quota information (nil-safe).
 func (a *Allowance) Clone() *Allowance {
 	if a == nil {
 		return nil
@@ -248,7 +248,7 @@ func (a *Allowance) Clone() *Allowance {
 	return &cp
 }
 
-// UsageSummary 是 /get_usage_summary 的返回（字段按需保留）。
+// UsageSummary is the return of /get_usage_summary (fields retained as needed).
 type UsageSummary struct {
 	IsPro             bool    `json:"is_pro"`
 	Plan              string  `json:"plan"`
@@ -259,7 +259,7 @@ type UsageSummary struct {
 	PeriodDescription string  `json:"period_description"`
 }
 
-// Account 是一个 DeepAI 上游账号（= 一个 API Key）。
+// Account is a DeepAI upstream account (= one API Key).
 type Account struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -268,7 +268,7 @@ type Account struct {
 	Username string `json:"username"`
 	IsPro    bool   `json:"is_pro"`
 
-	// 网页账号信息（注册链路写入；用于补跑与审计）。
+	// Web account information (written by the registration flow; used for re-runs and auditing).
 	Email         string `json:"email,omitempty"`
 	Password      string `json:"password,omitempty"`
 	WebSessionID  string `json:"session_id,omitempty"`
@@ -279,25 +279,25 @@ type Account struct {
 	RegisteredAt  int64  `json:"registered_at,omitempty"`
 	LastVerified  int64  `json:"last_verified,omitempty"`
 
-	// Group 是号池分组（空串等价于 default）。
+	// Group is the account pool group (empty string is equivalent to default).
 	Group string `json:"group,omitempty"`
 
-	// Proxy 是该账号推理时使用的上游代理（完整 URL，仅本地保存）。
+	// Proxy is the upstream proxy used by this account for inference (full URL, stored locally only).
 	Proxy       string `json:"proxy,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 
-	// 浏览器指纹快照（注册时写入）。推理侧带上同一套头，否则“用 Chrome 注册、
-	// 用空 UA 推理”本身就是一个可被识别的异常信号。
+	// Browser fingerprint snapshot (written at registration). The inference side carries the same set of headers; otherwise "registering with Chrome,
+	// inferring with an empty UA" is itself an identifiable anomaly signal.
 	UserAgent      string `json:"user_agent,omitempty"`
 	AcceptLanguage string `json:"accept_language,omitempty"`
 	SecCHUA        string `json:"sec_ch_ua,omitempty"`
 	Platform       string `json:"platform,omitempty"`
 
-	// MachineID 是该账号专用的机器指纹原始值（UUID）。
+	// MachineID is the raw machine fingerprint value dedicated to this account (UUID).
 	//
-	// 上游按 X-DeepAI-Code-Machine 每天发放一次免费额度；多个账号共用
-	// 一个指纹时只有第一个能拿到额度。注册时每号生成一个。
-	// 空串表示回退到进程级 MachineID()（历史账号 + 桌面端导入）。
+	// The upstream grants free quota once per day based on X-DeepAI-Code-Machine; when multiple accounts share
+	// one fingerprint, only the first one can get the quota. One is generated per account at registration.
+	// An empty string means fall back to the process-level MachineID() (legacy accounts + desktop imports).
 	MachineID string `json:"machine_id,omitempty"`
 
 	Enabled  bool   `json:"enabled"`
@@ -307,38 +307,38 @@ type Account struct {
 	LastErr  string `json:"last_err"`
 	Failures int    `json:"failures"`
 
-	// LastErrAt 是最后一次被标为 error 的时间（Unix 秒，0 = 早期字段缺失）。
+	// LastErrAt is the time the account was last marked as error (Unix seconds, 0 = early field missing).
 	//
-	// 存在的理由：status=error 是**上一次请求**的结果，不是账号的永久属性。
-	// 没有时间戳时，一次概率性 EOF / 429 会让账号永远显示“不健康”，
-	// 徽章长期停在 1/16 而实际号池在正常干活（见 docs/changes.md §45）。
-	// 有了它，「错误是否够新」才能当作健康度判据。
+	// Rationale for its existence: status=error is the result of the **previous request**, not a permanent property of the account.
+	// Without a timestamp, a single probabilistic EOF / 429 will make the account show "unhealthy" forever,
+	// with the badge stuck at 1/16 for a long time while the account pool is actually working normally (see docs/changes.md §45).
+	// With it, "whether the error is recent enough" can be used as a health criterion.
 	LastErrAt int64 `json:"last_err_at,omitempty"`
 
-	// ProbeAfter 是额度探测的下次允许时间（Unix 秒，0 = 无冷却）。
+	// ProbeAfter is the next allowed time for quota probing (Unix seconds, 0 = no cooldown).
 	//
-	// 探测失败后按次退避：没有这个字段时，后台额度守护每 5 分钟会把同一批
-	// 失败号全部重探一遍（docs/performance.md §14 之外的另一条写放大），
-	// 而失败往往是成片的（出口故障 / 上游抖动）。
+	// After a probe failure, back off per attempt: without this field, the background quota guard re-probes the same batch of
+	// failed accounts every 5 minutes (another source of write amplification beyond docs/performance.md §14),
+	// and failures often come in batches (egress outage / upstream flakiness).
 	ProbeAfter int64 `json:"probe_after,omitempty"`
-	// ProbeFailures 是连续探测失败次数（探测成功即清零）。
+	// ProbeFailures is the number of consecutive probe failures (reset to zero on a successful probe).
 	ProbeFailures int `json:"probe_failures,omitempty"`
 
-	// Theos 是最近一次 /theos 探测结果（只做展示，不做调度）。
+	// Theos is the most recent /theos probe result (display only, not used for scheduling).
 	Theos *Allowance `json:"theos,omitempty"`
 
-	// QuotaUntil 是「当日额度用完」的恢复时间（Unix 秒，0 = 无此状态）。
+	// QuotaUntil is the recovery time for "daily quota exhausted" (Unix seconds, 0 = not in this state).
 	//
-	// 来源：推理返回 403 theos_exhausted（付费模型 / 余额为负）。它与
-	// Blocked 不同：不需要人工处理，过了这个时间自动回到可用；在此之前
-	// 调度会跳过它，避免每个请求都白撞一次 403。
+	// Source: inference returns 403 theos_exhausted (paid model / negative balance). It differs from
+	// Blocked: no manual intervention is needed, and it automatically returns to available after this time; before then
+	// scheduling skips it, avoiding a wasted 403 on every request.
 	QuotaUntil int64 `json:"quota_until,omitempty"`
 }
 
-// Clone 返回账号的深拷贝（含 Theos 指针）。
+// Clone returns a deep copy of the account (including the Theos pointer).
 //
-// 号池持有的是唯一可变实例；对外一律交付 Clone，避免调用方在锁外
-// 改字段与调度 / 后台探测裸竞争。
+// The account pool holds the only mutable instance; externally it always hands out Clone, preventing callers from
+// modifying fields outside the lock and racing with scheduling / background probing.
 func (a *Account) Clone() *Account {
 	if a == nil {
 		return nil
@@ -351,14 +351,14 @@ func (a *Account) Clone() *Account {
 	return &cp
 }
 
-// MergeFrom 把已有账号 ex 的运行态与缺失身份字段并入 a。
+// MergeFrom merges the runtime state and missing identity fields of an existing account ex into a.
 //
-// 用于「同一个账号被重新导入 / 重新注册」的场景，策略有二：
-//   - 运行期状态（Failures / Status / LastErr / LastUsed / Theos）以 ex 为准：
-//     一次导入不应该抹掉故障计数与配额缓存；
-//   - 身份字段以 a 的非空值为准，空值才回落到 ex：重新导入不应清空
-//     机器指纹、代理、指纹快照这类“已赚到”的信息（清掉会断掉
-//     上游的额度归属，或让注册/推理特征不一致）。
+// Used for the "same account re-imported / re-registered" scenario, with two policies:
+// - Runtime state (Failures / Status / LastErr / LastUsed / Theos) follows ex:
+// a single import should not wipe failure counts and quota caches;
+// - Identity fields follow a's non-empty values, falling back to ex only when empty: re-importing should not clear
+// information already "earned" such as machine fingerprint, proxy, and fingerprint snapshot (clearing them would break
+// the upstream quota attribution, or make registration/inference features inconsistent).
 func (a *Account) MergeFrom(ex *Account) {
 	if a == nil || ex == nil {
 		return
@@ -398,7 +398,7 @@ func (a *Account) MergeFrom(ex *Account) {
 	}
 }
 
-// GroupName 返回规范化后的分组名。
+// GroupName returns the normalized group name.
 func (a *Account) GroupName() string {
 	if a == nil {
 		return "default"
@@ -410,7 +410,7 @@ func (a *Account) GroupName() string {
 	return g
 }
 
-// Registration 是网页注册链路产出的账号信息。
+// Registration is the account information produced by the web registration flow.
 type Registration struct {
 	Email          string
 	Password       string
@@ -432,13 +432,13 @@ type Registration struct {
 	Source         string
 }
 
-// KeyID 返回 API Key 的稳定短标识（用于去重与日志，不泄露明文）。
+// KeyID returns a stable short identifier for the API Key (used for deduplication and logging, without leaking plaintext).
 func (a *Account) KeyID() string { return KeyFingerprint(a.APIKey) }
 
-// SessionID 返回用于展示/排障的会话标识。
+// SessionID returns the session identifier used for display/troubleshooting.
 func (a *Account) SessionID() string { return ShortHash(a.APIKey) }
 
-// DefaultModelEntry 是目录不可用时的内置兜底条目。
+// DefaultModelEntry is a built-in fallback entry used when the catalog is unavailable.
 func DefaultModelEntry() Model {
 	return Model{
 		ID:            DefaultModel,

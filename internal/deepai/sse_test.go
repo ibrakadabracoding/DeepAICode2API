@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// collect 跑一遍 ReadSSE 并收集事件。
+// Run ReadSSE once and collect the events.
 func collect(t *testing.T, stream string) []SSEEvent {
 	t.Helper()
 	var got []SSEEvent
@@ -31,9 +31,9 @@ func TestReadSSEBasic(t *testing.T) {
 }
 
 func TestReadSSECRLF(t *testing.T) {
-	// Windows 上游（或代理）可能用 CRLF；按规范 CR 不是数据的一部分。
-	// 注意：这个保证来自 bufio.ScanLines（它本身就剥 \r\n 中的 \r），
-	// ReadSSE 里的 TrimSuffix 只是防御性的二层保险。
+	// Windows upstream (or proxy) may use CRLF; per the spec, CR is not part of the data.
+	// Note: this guarantee comes from bufio.ScanLines (which itself strips the \r in \r\n),
+	// the TrimSuffix in ReadSSE is just a defensive second layer of protection.
 	got := collect(t, "event: ping\r\ndata: hello\r\n\r\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d，期望 1", len(got))
@@ -44,7 +44,7 @@ func TestReadSSECRLF(t *testing.T) {
 }
 
 func TestReadSSEMultiLineDataJoinedWithCR(t *testing.T) {
-	// 规范：同一事件的多行 data 用 "\n" 拼接。
+	// Spec: multiple data lines of the same event are joined with "\n".
 	got := collect(t, "data: line1\ndata: line2\ndata: line3\n\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d，期望 1", len(got))
@@ -65,7 +65,7 @@ func TestReadSSESkipsComments(t *testing.T) {
 }
 
 func TestReadSSETrailingEventWithoutBlankLine(t *testing.T) {
-	// 流被截断时应把最后一个事件发出去，而不是丢掉。
+	// When the stream is truncated, the last event should still be emitted rather than dropped.
 	got := collect(t, "data: tail")
 	if len(got) != 1 || got[0].Data != "tail" {
 		t.Fatalf("尾部事件丢失: %#v", got)
@@ -73,7 +73,7 @@ func TestReadSSETrailingEventWithoutBlankLine(t *testing.T) {
 }
 
 func TestReadSSEValueWithColonAndSpaces(t *testing.T) {
-	// 只切第一个冒号，且只吃掉一个前导空格。
+	// Split only at the first colon, and consume only one leading space.
 	got := collect(t, "data:  {\"u\":\"http://x/y\"}\n\n")
 	if len(got) != 1 {
 		t.Fatalf("事件数 = %d", len(got))
@@ -139,7 +139,7 @@ func TestSSEWriteReadRoundTrip(t *testing.T) {
 }
 
 func TestReadSSELargePayload(t *testing.T) {
-	// 上游单条事件可能很大（长工具调用参数）；>64KB 的默认 Scanner 缓冲会炸。
+	// A single upstream event may be very large (long tool-call arguments); the default Scanner buffer of >64KB will blow up.
 	big := strings.Repeat("x", 200*1024)
 	var got []SSEEvent
 	err := ReadSSE(strings.NewReader("data: "+big+"\n\n"), func(ev SSEEvent) error {
@@ -154,7 +154,7 @@ func TestReadSSELargePayload(t *testing.T) {
 	}
 }
 
-// 确保 io.Reader 接口语义被覆盖：分片读取不应影响解析。
+// Ensure the io.Reader interface semantics are covered: chunked reads should not affect parsing.
 func TestReadSSEChunkedReader(t *testing.T) {
 	r := &chunkReader{data: []byte("data: hello\ndata: world\n\n"), chunk: 3}
 	var got []SSEEvent
@@ -169,7 +169,7 @@ func TestReadSSEChunkedReader(t *testing.T) {
 	}
 }
 
-// chunkReader 每次最多吐出 chunk 字节，模拟网络分片。
+// chunkReader emits at most chunk bytes each time, simulating network fragmentation.
 type chunkReader struct {
 	data  []byte
 	chunk int

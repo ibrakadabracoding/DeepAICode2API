@@ -56,8 +56,8 @@ func TestMaskSecret(t *testing.T) {
 	}{
 		{"", ""},
 		{"a", "a***"},
-		{"abcdefghij", "a***"},           // len == 10 走短分支
-		{"abcdefghijk", "abcdef...hijk"}, // len 11 才保留首 6 尾 4
+		{"abcdefghij", "a***"},           // len == 10 takes the short branch
+		{"abcdefghijk", "abcdef...hijk"}, // only len 11 keeps the first 6 and last 4
 		{"sk-1234567890abcdef", "sk-123...cdef"},
 	}
 	for _, c := range cases {
@@ -67,8 +67,8 @@ func TestMaskSecret(t *testing.T) {
 	}
 }
 
-// TestMaskProxyNeverLeaksCredentials 是安全断言：代理里的用户名/密码
-// 绝不能出现在日志或控制台标签里。
+// TestMaskProxyNeverLeaksCredentials is a security assertion: the username/password in the proxy
+// must never appear in logs or console labels.
 func TestMaskProxyNeverLeaksCredentials(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -137,11 +137,11 @@ func TestDesktopBaseDirsExplicit(t *testing.T) {
 	}
 }
 
-// TestDesktopBaseDirsFromEnv 覆盖两个候选环境变量并验证去重。
+// TestDesktopBaseDirsFromEnv covers two candidate environment variables and verifies deduplication.
 func TestDesktopBaseDirsFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("T3CODE_HOME", dir)
-	t.Setenv("DEEPAI_CODE_HOME", "  "+dir+"  ") // 同值（带空白）应被去重
+	t.Setenv("DEEPAI_CODE_HOME", "  "+dir+"  ") // identical values (with whitespace) should be deduplicated
 
 	got := DesktopBaseDirs("")
 	if len(got) != 2 {
@@ -154,7 +154,7 @@ func TestDesktopBaseDirsFromEnv(t *testing.T) {
 		t.Fatalf("末位候选应为 ~/.deepai-code，得到 %q", got[1])
 	}
 
-	// 环境变量清空后只剩主目录候选。
+	// after the environment variables are cleared, only the home directory candidate remains.
 	t.Setenv("T3CODE_HOME", "")
 	t.Setenv("DEEPAI_CODE_HOME", "")
 	if got := DesktopBaseDirs(""); len(got) != 1 {
@@ -162,11 +162,11 @@ func TestDesktopBaseDirsFromEnv(t *testing.T) {
 	}
 }
 
-// TestDesktopSecretDirsLayouts 覆盖“用户可能指到任意一层”的四种形态。
+// TestDesktopSecretDirsLayouts covers the four forms of "the user may point to any level".
 func TestDesktopSecretDirsLayouts(t *testing.T) {
 	base := t.TempDir()
 
-	// 1) 指向 baseDir：展开成三个候选（userdata/secrets、secrets、dev/secrets）。
+	// 1) Points to baseDir: expands into three candidates (userdata/secrets, secrets, dev/secrets).
 	got := DesktopSecretDirs(base)
 	want := []string{
 		filepath.Join(base, "userdata", "secrets"),
@@ -182,7 +182,7 @@ func TestDesktopSecretDirsLayouts(t *testing.T) {
 		}
 	}
 
-	// 2) 直接指向凭据文件：回落到它所在目录。
+	// 2) Points directly to the credential file: falls back to its containing directory.
 	file := filepath.Join(base, CredentialFile)
 	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -191,24 +191,24 @@ func TestDesktopSecretDirsLayouts(t *testing.T) {
 		t.Fatalf("凭据文件应回落到所在目录，得到 %v", got)
 	}
 
-	// 3) 指向不存在的路径：仍展开三个候选（调用方自己 Stat）。
+	// 3) Points to a nonexistent path: still expands into three candidates (the caller does its own Stat).
 	missing := filepath.Join(base, "nope")
 	if got := DesktopSecretDirs(missing); len(got) != 3 {
 		t.Fatalf("不存在的路径也应展开候选，得到 %v", got)
 	}
 
-	// 4) 空串：沿用 DesktopBaseDirs 的探测结果。
+	// 4) Empty string: reuses the detection result of DesktopBaseDirs.
 	t.Setenv("T3CODE_HOME", base)
 	t.Setenv("DEEPAI_CODE_HOME", "")
 	got = DesktopSecretDirs("")
-	if len(got) != 6 { // base 的 3 个 + ~/.deepai-code 的 3 个
+	if len(got) != 6 { // 3 from base + 3 from ~/.deepai-code
 		t.Fatalf("空串探测应有 6 个候选，得到 %v", got)
 	}
 }
 
 func TestDedupeNormalizesCaseAndClean(t *testing.T) {
-	// Windows 下大小写不敏感，Linux 下 cleaner 只做 path.Clean；
-	// dedupe 统一小写比较，两种平台都应只保留一份。
+	// Case-insensitive on Windows; on Linux the cleaner only does path.Clean;
+	// dedupe compares uniformly in lowercase, so both platforms should keep only one copy.
 	got := dedupe([]string{"/a/b", "/a/b/", "/A/B", "/a//b", "/a/c"})
 	if len(got) != 2 {
 		t.Fatalf("dedupe 结果 = %v，期望 2 项", got)

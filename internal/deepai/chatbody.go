@@ -2,29 +2,37 @@ package deepai
 
 import "encoding/json"
 
-// DefaultSystemPrompt 是补齐 system 消息时使用的兜底提示词。
+// DefaultSystemPrompt is the fallback prompt used when filling in a system message.
 //
-// 上游 0.3.19+ 的请求体校验只认“DeepAI Code 会发的那种形状”，桌面端每个
-// 请求都带 system 提示词与 tools；纯 user-only 的请求偶尔会被 400
-// invalid_request_error 拒绝。这里只补 system 消息，不改写用户内容；
-// 请求里已经有 system / developer 消息时原样保留，绝不替换。
+// Upstream 0.3.19+ body validation only accepts "the shape DeepAI Code sends";
+// the desktop client attaches a system prompt and tools to every request, and
+// pure user-only requests are occasionally rejected with a 400
+// invalid_request_error. This only adds a system message and never rewrites user
+// content; if a system / developer message already exists it is kept as-is
+// and never replaced.
 const DefaultSystemPrompt = "You are a helpful AI assistant. Answer the user's request directly."
 
-// desktopChatKeys 是「桌面端会发的字段 ∪ 会改变采样/用量的旋钮」。
+// desktopChatKeys is "the fields the desktop client sends ∪ the knobs that
+// change sampling/usage".
 //
-// 仅在上游以 “This request is not one DeepAI Code sends.” 拒绝后作为兜底
-// 重试使用；正常路径仍然透传客户端的原始字段。
+// It is only used as a fallback retry after upstream rejects with
+// "This request is not one DeepAI Code sends."; the normal path still passes
+// through the client's original fields.
 //
-// 实测桌面端（0.3.20，2026-11-15 用 0.3.37 复核；pi 运行时同为 1.3.0，请求体形状未变）
-// 每个 chat 请求发的是：
+// Measured on the desktop client (0.3.20, re-verified with 0.3.37 on 2026-11-15;
+// the pi runtime is also 1.3.0 and the request body shape is unchanged), every
+// chat request sends:
 //
 //	model / messages / stream / stream_options / store=false /
 //	max_completion_tokens / temperature / tools / tool_choice /
-//	reasoning_effort（reasoning 模型关思考时发 "none"）
+//	reasoning_effort ("none" when thinking is disabled on reasoning models)
 //
-// 因此 store 必须留在白名单里（早期漏了它，重排后反而比桌面端少一个字段）。
-// 至于 seed / service_tier / top_p / stop / prompt_cache_key：桌面端本身不发，
-// 但它们是网关调用方显式给的采样/用量参数，丢掉会静默改掉请求语义，所以保留。
+// store therefore has to stay in the allowlist (it was missing early on,
+// so the reordered body ended up one field short of the desktop client).
+// As for seed / service_tier / top_p / stop / prompt_cache_key: the desktop
+// client does not send them, but they are sampling/usage params the gateway
+// caller set explicitly, and dropping them would silently change request
+// semantics, so they are kept.
 var desktopChatKeys = map[string]bool{
 	"model":                 true,
 	"messages":              true,
@@ -45,13 +53,15 @@ var desktopChatKeys = map[string]bool{
 	"prompt_cache_key":      true,
 }
 
-// ChatBodyFallback 把 chat 请求体收敛成桌面端形状，供 400 拒绝后的重试使用。
+// ChatBodyFallback narrows a chat request body to the desktop client shape,
+// for use as a retry after a 400 rejection.
 //
-// 规则：
-//   - 只保留白名单字段；
-//   - 确保第一条消息是 system（缺失时插入默认提示词）。
+// Rules:
+//   - keep only allowlisted fields;
+//   - ensure the first message is system (insert the default prompt if missing).
 //
-// 返回 ok=false 表示请求体无法解析 / 没有 messages，不值得重试。
+// ok=false means the body cannot be parsed / has no messages, so a retry is
+// not worthwhile.
 func ChatBodyFallback(body []byte, systemPrompt string) ([]byte, bool) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -100,11 +110,13 @@ func hasSystemMessage(msgs []any) bool {
 	return false
 }
 
-// EnsureSystemMessage 只在缺少 system / developer 消息时补一条默认提示词。
+// EnsureSystemMessage adds a default prompt only when no system / developer
+// message is present.
 //
-// 与 ChatBodyFallback 的区别：这里**不动**其它字段（不裁剪白名单），
-// 因此可以在正常路径上预置，而不会悄悄改掉调用方显式给出的采样参数。
-// 返回 inserted=true 表示请求体已被改写。
+// Unlike ChatBodyFallback it does **not** touch any other field (no allowlist
+// trimming), so it is safe to apply on the normal path without silently
+// changing sampling params the caller set explicitly.
+// inserted=true means the request body was rewritten.
 func EnsureSystemMessage(body []byte, systemPrompt string) ([]byte, bool) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {

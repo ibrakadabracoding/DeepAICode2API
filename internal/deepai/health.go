@@ -10,31 +10,31 @@ import (
 	"time"
 )
 
-// 账号健康度的判定就在这里。
+// The account health determination is right here.
 //
-// 背景（docs/changes.md §45）：`status` 是**上一次请求的结果**，不是账号的
-// 永久属性。上游的 EOF / 429「Too many requests today」是按次出现的，只要
-// 把每次失败都写成 status=error 且永不清除，徽章就会长期停在 1/16，
-// 而号池其实一直在正常出活。所以：
+// Background (docs/changes.md §45): `status` is the **result of the last request**, not the account's
+// permanent attribute. Upstream EOF / 429 "Too many requests today" occur per request; as long as
+// every failure is written as status=error and never cleared, the badge will stay at 1/16 for a long time,
+// while the account pool is actually working normally the whole time. So:
 //
-//   - Transient 先区分「这次没成」与「这个号坏了」；
-//   - AccountReady 再把「错误是否够新」折算进健康度（ErrorStaleAfter）。
+// - Transient first distinguishes "this attempt failed" from "this account is broken";
+// - AccountReady then factors "whether the error is recent enough" into health (ErrorStaleAfter).
 
-// Transient 报告一次失败是否属于「瞬时」类别：只说明这次请求没成，
-// 不代表账号坏了（不该被打成 error，也不该被当成健康度依据）。
+// Transient reports whether a failure belongs to the "transient" category: it only means this request failed,
+// not that the account is broken (it should not be marked as error, nor used as a basis for health).
 //
-// 判为瞬时的：网络层错误（EOF / reset / 超时）、429 频控、5xx、409 session_busy
-// （容量拒绝）、check_in_refused（能推理、只是当天签到到顶）。
-// 不瞬时的：401 / 无效 Key、social_login_required、email_unverified，
-// 以及**今日额度到顶**（`Too many requests today`）—— 后者是“今天真的不能
-// 用”，要如实显示成 degraded，而不是当成噪声抹掉。
+// Classified as transient: network-layer errors (EOF / reset / timeout), 429 rate limiting, 5xx, 409 session_busy
+// (capacity rejection), check_in_refused (inference works, only the daily check-in limit is reached).
+// Not transient: 401 / invalid Key, social_login_required, email_unverified,
+// and **daily quota exhausted** (`Too many requests today`) - the latter means "today it truly cannot
+// be used", and should be shown as degraded truthfully, not erased as noise.
 func Transient(err error) bool {
 	if err == nil {
 		return false
 	}
 	var he *HTTPError
 	if errors.As(err, &he) {
-		// 额度到顶优先判定：它即使以 429 返回，也不是“歇一下就好”。
+		// Quota exhaustion takes precedence: even if it returns as 429, it is not "just take a break".
 		if isDailyQuota(string(he.Body)) {
 			return false
 		}
@@ -44,10 +44,10 @@ func Transient(err error) bool {
 		case he.Status >= 500:
 			return true
 		case he.Status == http.StatusConflict && he.Code() == CodeSessionBusy:
-			// 容量拒绝：整池都满时才看得到，和账号本身无关。
+			// Capacity rejection: only visible when the whole pool is full, unrelated to the account itself.
 			return true
 		case he.Code() == CodeCheckInRefused:
-			// 签到限流：推理照常，只是当天签到额度到顶。
+			// Check-in rate limiting: inference works as usual, only the daily check-in quota is exhausted.
 			return true
 		}
 		return false
@@ -58,14 +58,14 @@ func Transient(err error) bool {
 	}
 	var ne net.Error
 	if errors.As(err, &ne) {
-		return true // 超时 / 临时网络错误
+		return true // Timeout / temporary network error
 	}
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
 		return true
 	}
-	// 上游偶尔把“正在重启 / 网关挂了”塞进 message 而不是状态码，
-	// 这类只靠类型判断不出来，文本兜底。注意：额度到顶不算。
+	// Upstream occasionally puts "restarting / gateway down" into the message instead of the status code,
+	// This kind cannot be determined by type alone; use text as fallback. Note: quota exhaustion does not count.
 	text := strings.ToLower(err.Error())
 	if isDailyQuota(text) {
 		return false
@@ -87,28 +87,28 @@ func Transient(err error) bool {
 	return false
 }
 
-// isDailyQuota 识别“今日额度到顶”类文案。
+// isDailyQuota recognizes "daily quota exhausted"-style messages.
 //
-// 这类失败当天不会自愈（要到 refresh_at 才重置），所以不能算瞬时噪声：
-// 号池要能看出“这个号今天用不了了”。
+// This kind of failure does not self-heal within the day (it only resets at refresh_at), so it cannot be treated as transient noise:
+// The account pool must be able to tell that "this account is unusable today".
 func isDailyQuota(text string) bool {
 	return strings.Contains(strings.ToLower(text), "too many requests today")
 }
 
-// AccountReady 报告账号在 now 时刻是否算「就绪」。
+// AccountReady reports whether the account counts as "ready" at time now.
 //
-// 规则：
-//   - 停用的不算；
-//   - blocked（上游策略拦截）不算：它不会自愈，必须人工处理；
-//   - status=error 但错误已经超过 ErrorStaleAfter 没再出现 → 算就绪
-//     （那是历史噪声，调度器也从来没跳过 error 号）；
-//   - 其余（ok / unknown / 新错）都算就绪，unknown 是「还没探过」，
-//     刚导入时不该被算成坏号。
+// Rules:
+// - Disabled accounts do not count;
+// - blocked (blocked by upstream policy) does not count: it will not self-heal and requires manual handling;
+// - status=error but the error has not recurred for longer than ErrorStaleAfter → counts as ready
+// (that is historical noise, and the scheduler has never skipped error accounts anyway);
+// - Everything else (ok / unknown / new error) counts as ready; unknown means "not probed yet",
+// and a freshly imported account should not be counted as bad.
 func AccountReady(a *Account, now time.Time) bool {
 	if a == nil || !a.Enabled || a.Status == StatusBlocked {
 		return false
 	}
-	// 当日额度用完：到 QuotaUntil 之前不参与调度（403 theos_exhausted）。
+	// Daily quota exhausted: excluded from scheduling until QuotaUntil (403 theos_exhausted).
 	if a.QuotaUntil > 0 && now.Unix() < a.QuotaUntil {
 		return false
 	}
@@ -118,10 +118,10 @@ func AccountReady(a *Account, now time.Time) bool {
 	return now.Sub(time.Unix(a.LastErrAt, 0)) >= ErrorStaleAfter
 }
 
-// AccountDegraded 报告账号是否「最近失败过」（error 且错误仍然新鲜）。
+// AccountDegraded reports whether the account has "failed recently" (error and the error is still fresh).
 //
-// health 用它给出第二个数字：就绪之外还有多少号正在出错。只显示 ready/total
-// 会把「刚被 429 打了一下」和「真的坏了」混为一谈。
+// health uses it to produce a second number: how many accounts besides the ready ones are currently failing. Showing only ready/total
+// would conflate "just got hit by a 429" with "actually broken".
 func AccountDegraded(a *Account, now time.Time) bool {
 	if a == nil || !a.Enabled || a.Status != StatusError {
 		return false

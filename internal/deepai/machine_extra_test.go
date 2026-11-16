@@ -29,8 +29,8 @@ func TestParseUUID(t *testing.T) {
 	}
 }
 
-// TestParseUUIDTakesFirstMatch 记录当前语义：只校验第一个匹配，
-// 占位值在前时直接判空（不继续往后找）。
+// TestParseUUIDTakesFirstMatch records the current semantics: only the first match is validated,
+// when a placeholder value comes first, it is directly judged empty (does not continue searching further).
 func TestParseUUIDTakesFirstMatch(t *testing.T) {
 	in := "00000000-0000-0000-0000-000000000000 then 3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 	if got := parseUUID(in); got != "" {
@@ -90,8 +90,8 @@ func TestFormatUUIDLayout(t *testing.T) {
 	}
 }
 
-// TestRunReturnsEmptyOnFailure 覆盖 run 的两条失败路径：
-// 可执行文件不存在、非零退出码。
+// TestRunReturnsEmptyOnFailure covers the two failure paths of run:
+// executable file does not exist, non-zero exit code.
 func TestRunReturnsEmptyOnFailure(t *testing.T) {
 	ctx := context.Background()
 
@@ -99,7 +99,7 @@ func TestRunReturnsEmptyOnFailure(t *testing.T) {
 		t.Fatalf("不存在的命令应返回空串，得到 %q", got)
 	}
 
-	// 非零退出码：cmd.Output() 返回 error → 空串。
+	// Non-zero exit code: cmd.Output() returns error → empty string.
 	if runtime.GOOS == "windows" {
 		if got := run(ctx, "cmd", "/c", "exit 1"); got != "" {
 			t.Fatalf("非零退出码应返回空串，得到 %q", got)
@@ -111,7 +111,7 @@ func TestRunReturnsEmptyOnFailure(t *testing.T) {
 	}
 }
 
-// TestRunReturnsStdout 确认成功时原样返回 stdout（不裁剪）。
+// TestRunReturnsStdout confirms that on success stdout is returned as-is (not trimmed).
 func TestRunReturnsStdout(t *testing.T) {
 	var got string
 	if runtime.GOOS == "windows" {
@@ -124,7 +124,7 @@ func TestRunReturnsStdout(t *testing.T) {
 	}
 }
 
-// TestMachineFingerprintNormalizes 补充空值 / 大小写 / 空白三条分支。
+// TestMachineFingerprintNormalizes adds three branches: empty value / case / whitespace.
 func TestMachineFingerprintNormalizes(t *testing.T) {
 	if got := MachineFingerprint(""); got != "" {
 		t.Fatalf("空指纹应返回空串（调用方据此不发请求头），得到 %q", got)

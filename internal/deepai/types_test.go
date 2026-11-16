@@ -32,7 +32,7 @@ func TestModelPredicates(t *testing.T) {
 			name:          "responses 模型 + 图片输入",
 			m:             Model{ID: "d", API: "openai-responses", Input: []string{"text", "image"}},
 			wantResponses: true,
-			wantFree:      true, // Premier 为 false
+			wantFree:      true, // Premier is false
 			wantImage:     true,
 		},
 		{
@@ -89,12 +89,12 @@ func TestAccountCloneIsDeepCopy(t *testing.T) {
 	}
 }
 
-// TestAccountMergeFrom 固化 MergeFrom 的两条策略：
-// 运行态以旧账号为准，身份字段只在新账号为空时回落。
+// TestAccountMergeFrom pins down the two MergeFrom policies:
+// Runtime state follows the old account; identity fields fall back only when the new account's value is empty.
 func TestAccountMergeFrom(t *testing.T) {
 	var nilAcct *Account
-	nilAcct.MergeFrom(&Account{}) // 不应 panic
-	(&Account{}).MergeFrom(nil)   // 不应 panic
+	nilAcct.MergeFrom(&Account{}) // should not panic
+	(&Account{}).MergeFrom(nil)   // should not panic
 
 	existing := &Account{
 		ID:            "keep-id",
@@ -117,13 +117,13 @@ func TestAccountMergeFrom(t *testing.T) {
 		Fingerprint:   "fp-old",
 		RegisteredAt:  777,
 	}
-	// 新注册结果：只有部分字段非空。
+	// New registration result: only some fields are non-empty.
 	acct := &Account{
 		Name:           "new-name",
 		Username:       "new-user",
 		APIKey:         "sk-new",
 		Email:          "new@example.com",
-		Group:          "", // 空 → 回落到旧分组
+		Group:          "", // Empty → fall back to the old group
 		MachineID:      "",
 		Proxy:          "",
 		UserAgent:      "",
@@ -185,7 +185,7 @@ func TestAccountKeyAndSessionID(t *testing.T) {
 		t.Fatalf("标识长度异常: key=%q session=%q", a.KeyID(), a.SessionID())
 	}
 
-	// 两侧空白不应影响指纹（Key 从文件/剪贴板复制时常见）。
+	// Whitespace on either side should not affect the fingerprint (common when the Key is copied from a file/clipboard).
 	if (&Account{APIKey: "  sk-abcdef  "}).KeyID() != a.KeyID() {
 		t.Fatal("KeyID 应先 TrimSpace")
 	}

@@ -14,10 +14,10 @@ import (
 	"time"
 )
 
-// UUIDPattern 匹配标准 UUID 字符串。
+// UUIDPattern matches standard UUID strings.
 var UUIDPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
-// SMBIOSPlaceholders 是固件常见的占位 UUID，不能作为稳定机器标识。
+// SMBIOSPlaceholders are placeholder UUIDs commonly found in firmware and cannot serve as stable machine identifiers.
 var SMBIOSPlaceholders = map[string]bool{
 	"00000000-0000-0000-0000-000000000000": true,
 	"ffffffff-ffff-ffff-ffff-ffffffffffff": true,
@@ -29,18 +29,18 @@ var (
 	machineID   string
 )
 
-// MachineID 返回本机稳定的机器指纹（原始标识的 sha256）。
+// MachineID returns the stable machine fingerprint of this host (sha256 of the raw identifier).
 //
-// 上游用它按天发放免费 Theos：同一台机器每天只发一次。
-// 结果在进程内只计算一次；读不到时返回空串（上游会拒绝免费额度，
-// 但付费请求仍可工作）。
+// The upstream uses it to issue free Theos daily: the same machine is only issued once per day.
+// The result is computed only once per process; returns an empty string when it cannot be read (the upstream will reject free quota,
+// but paid requests still work).
 //
-// 可用 DEEPAI_MACHINE_ID 显式覆盖（写入原始 UUID，内部仍做 sha256），
-// 便于容器 / 无 SMBIOS 环境部署。
+// Can be explicitly overridden with DEEPAI_MACHINE_ID (write the raw UUID; sha256 is still applied internally),
+// for easier deployment in containers / environments without SMBIOS.
 //
-// 注意：这是**本机**指纹，只适合不需要区分账号的请求（模型目录等）。
-// 推理 / 配额请求应优先使用 Account.MachineID（见 MachineFingerprint），
-// 否则多个账号共用一个指纹，上游只会给第一个账号发放每日额度。
+// Note: this is a **host** fingerprint, suitable only for requests that do not need to distinguish accounts (model catalog, etc.).
+// Inference / quota requests should prefer Account.MachineID (see MachineFingerprint),
+// otherwise multiple accounts share one fingerprint and the upstream only issues the daily quota to the first account.
 func MachineID() string {
 	machineOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv("DEEPAI_MACHINE_ID"))
@@ -52,9 +52,9 @@ func MachineID() string {
 	return machineID
 }
 
-// MachineFingerprint 把原始机器标识（UUID / machine-id）转成上游要求的 sha256 十六进制。
+// MachineFingerprint converts the raw machine identifier (UUID / machine-id) into the sha256 hex required by the upstream.
 //
-// 空串返回空串：调用方据此“不发该请求头”，而不是发一个空值。
+// An empty string returns an empty string: the caller uses this to "not send the header" rather than sending an empty value.
 func MachineFingerprint(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	if raw == "" {
@@ -64,10 +64,10 @@ func MachineFingerprint(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// NewMachineUUID 生成一个新的随机 UUID（v4）。
+// NewMachineUUID generates a new random UUID (v4).
 //
-// 每个注册账号分配一个独立的机器指纹，才能各自拿到上游按机器发放的每日额度；
-// 全局共用一个指纹时，只有第一个账号能拿到额度（其余 balance=0）。
+// Each registered account must be assigned an independent machine fingerprint so that each can receive the daily quota the upstream issues per machine;
+// when a single fingerprint is shared globally, only the first account gets the quota (the rest have balance=0).
 func NewMachineUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -78,7 +78,7 @@ func NewMachineUUID() string {
 	return formatUUID(b)
 }
 
-// formatUUID 把 16 字节格式化为 8-4-4-4-12。
+// formatUUID formats 16 bytes as 8-4-4-4-12.
 func formatUUID(b [16]byte) string {
 	const hexDigits = "0123456789abcdef"
 	buf := make([]byte, 36)
@@ -114,10 +114,10 @@ func detectMachineRaw() string {
 			}
 		}
 	case "linux":
-		// 0.3.37 桌面端只用 systemd machine-id（无 root 读不到固件 UUID）：
-		// /etc/machine-id → /var/lib/dbus/machine-id，要求 32 位小写 hex 且非全 0。
-		// 早前版本先读 /sys/class/dmi/id/product_uuid，但固件占位值会返回一个
-		// 不稳定的指纹（桌面端早已不用），这里与 0.3.37 对齐。
+		// 0.3.37 desktop only uses the systemd machine-id (firmware UUID is unreadable without root):
+		// /etc/machine-id → /var/lib/dbus/machine-id, requiring 32 lowercase hex characters and not all zeros.
+		// Earlier versions read /sys/class/dmi/id/product_uuid first, but firmware placeholder values return a
+		// Unstable fingerprint (long unused on desktop); aligned with 0.3.37 here.
 		for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
 			if b, err := os.ReadFile(path); err == nil {
 				if id := parseLinuxMachineID(string(b)); id != "" {
@@ -129,7 +129,7 @@ func detectMachineRaw() string {
 	return ""
 }
 
-// parseUUID 提取并校验第一个非占位 UUID。
+// parseUUID extracts and validates the first non-placeholder UUID.
 func parseUUID(s string) string {
 	m := UUIDPattern.FindString(s)
 	if m == "" {
@@ -142,10 +142,10 @@ func parseUUID(s string) string {
 	return low
 }
 
-// parseLinuxMachineID 校验 systemd machine-id：32 位小写 hex，且不能是全 0。
+// parseLinuxMachineID validates the systemd machine-id: 32 lowercase hex chars and must not be all zeros.
 //
-// 与桌面端 parseLinuxMachineId 同义（0.3.37）：全 0 是未初始化标志，
-// 不能当作稳定指纹。
+// Same as desktop parseLinuxMachineId (0.3.37): all zeros is an uninitialized marker,
+// and cannot be treated as a stable fingerprint.
 func parseLinuxMachineID(raw string) string {
 	id := strings.ToLower(strings.TrimSpace(raw))
 	if len(id) != 32 {
@@ -162,7 +162,7 @@ func parseLinuxMachineID(raw string) string {
 	return id
 }
 
-// parseMachineGuid 从 reg query 输出中提取 MachineGuid。
+// parseMachineGuid extracts MachineGuid from reg query output.
 func parseMachineGuid(out string) string {
 	m := regexp.MustCompile(`MachineGuid\s+REG_SZ\s+(\S+)`).FindStringSubmatch(out)
 	if len(m) != 2 {
@@ -174,7 +174,7 @@ func parseMachineGuid(out string) string {
 	return strings.TrimSpace(m[1])
 }
 
-// run 执行外部命令并在超时后放弃，输出为空时返回空串。
+// run executes an external command and gives up after timeout; returns an empty string when output is empty.
 func run(ctx context.Context, name string, args ...string) string {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stderr = nil

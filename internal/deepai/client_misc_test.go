@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// errWriter 累计写入预算耗尽后返回错误，用于覆盖 SSE 写出错误的分支。
+// errWriter returns an error after the cumulative write budget is exhausted, used to cover the SSE write error branch.
 type errWriter struct{ budget int }
 
 func (w *errWriter) Write(p []byte) (int, error) {
@@ -37,8 +37,8 @@ func TestWriteSSEFormatAndErrors(t *testing.T) {
 		t.Fatalf("WriteSSE 输出 = %q", got)
 	}
 
-	// 三段写入（"data: " 6 字节 / payload 7 字节 / "\n\n" 2 字节）
-	// 任意一段失败都要把错误抛给调用方（否则流会静默截断）。
+	// Three write segments ("data: " 6 bytes / payload 7 bytes / "\n\n" 2 bytes)
+	// If any segment fails, the error must be propagated to the caller (otherwise the stream is silently truncated).
 	for _, budget := range []int{0, 6, 13} {
 		if err := WriteSSE(&errWriter{budget: budget}, []byte(`{"a":1}`)); err == nil {
 			t.Fatalf("写入预算 %d 字节用尽时应报错", budget)
@@ -56,7 +56,7 @@ func TestWriteSSEEventFormatAndErrors(t *testing.T) {
 		t.Fatalf("WriteSSEEvent 输出 = %q，期望 %q", got, want)
 	}
 
-	// 空 event 名不写 event 行（OpenAI 兼容端点的形态）。
+	// An empty event name means no event line is written (the shape of OpenAI-compatible endpoints).
 	buf.Reset()
 	if err := WriteSSEEvent(&buf, "", []byte(`[DONE]`)); err != nil {
 		t.Fatalf("WriteSSEEvent: %v", err)
@@ -65,7 +65,7 @@ func TestWriteSSEEventFormatAndErrors(t *testing.T) {
 		t.Fatalf("空 event 输出 = %q", got)
 	}
 
-	// "event: e\n" 9 + "data: " 6 + payload 7 + "\n\n" 2 = 24 字节。
+	// "event: e\n" 9 + "data: " 6 + payload 7 + "\n\n" 2 = 24 bytes.
 	for _, budget := range []int{0, 5, 9, 15, 22} {
 		if err := WriteSSEEvent(&errWriter{budget: budget}, "e", []byte(`{"x":1}`)); err == nil {
 			t.Fatalf("写入预算 %d 字节用尽时应报错", budget)
@@ -73,7 +73,7 @@ func TestWriteSSEEventFormatAndErrors(t *testing.T) {
 	}
 }
 
-// TestBodyRejectedRequires400 固化「只有 400 且文案匹配才算请求体形状拒绝」。
+// TestBodyRejectedRequires400 pins down that only a 400 with a matching message counts as a request body shape rejection.
 func TestBodyRejectedRequires400(t *testing.T) {
 	msg := `{"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}`
 	if !mustErr(t, http.StatusBadRequest, msg).BodyRejected() {
@@ -90,9 +90,9 @@ func TestBodyRejectedRequires400(t *testing.T) {
 	}
 }
 
-// TestBodyRejectedAcceptsNewMessage 覆盖 2026-11-13 实测到的新文案：
-// 上游把同一个门槛的 message 换成了 “This request cannot be accepted.”，
-// 漏掉它 ChatBodyFallback 就不会重试，调用方直接吃 400。
+// TestBodyRejectedAcceptsNewMessage covers the new message measured on 2026-11-13:
+// The upstream changed the message for the same threshold to "This request cannot be accepted.",
+// If it is missed, ChatBodyFallback will not retry and the caller gets a 400 directly.
 func TestBodyRejectedAcceptsNewMessage(t *testing.T) {
 	msg := `{"error":{"message":"This request cannot be accepted.","type":"invalid_request_error","code":"invalid_request_error"}}`
 	if !mustErr(t, http.StatusBadRequest, msg).BodyRejected() {
@@ -103,27 +103,27 @@ func TestBodyRejectedAcceptsNewMessage(t *testing.T) {
 	}
 }
 
-// TestHomeDirFallback 覆盖主目录不可用时的回落顺序。
+// TestHomeDirFallback covers the fallback order when the home directory is unavailable.
 func TestHomeDirFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		// Windows 上 os.UserHomeDir 读 USERPROFILE，两者都清空才会失败。
+		// On Windows, os.UserHomeDir reads USERPROFILE; it only fails when both are cleared.
 		t.Setenv("USERPROFILE", "")
 		t.Setenv("HOMEDRIVE", "")
 		t.Setenv("HOMEPATH", "")
 	} else {
 		t.Setenv("HOME", "")
 	}
-	// 无论是否拿到真实主目录，都不允许返回空串。
+	// Whether or not a real home directory is obtained, returning an empty string is not allowed.
 	if got := HomeDir(); got == "" {
 		t.Fatal("HomeDir 不应为空串")
 	}
 }
 
-// TestDoTransportError 覆盖连接失败：错误必须原样上抛并被判定为瞬时故障。
+// TestDoTransportError covers connection failure: the error must be propagated as-is and classified as a transient fault.
 func TestDoTransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := srv.URL
-	srv.Close() // 端口已关闭，后续请求连接被拒
+	srv.Close() // The port is closed, so subsequent requests are refused.
 
 	c := NewClient()
 	c.Origin = url
@@ -159,8 +159,8 @@ func TestDoTransportError(t *testing.T) {
 	}
 }
 
-// TestDetectLaneServerErrorFallback 覆盖「全是 5xx」：应给出兜底错误，
-// 因为 5xx 说明上游抖动而不是车道不对（此时 lastErr 为空）。
+// TestDetectLaneServerErrorFallback covers the all-5xx case: a fallback error should be returned,
+// because 5xx means upstream flakiness rather than a wrong lane (lastErr is empty in this case).
 func TestDetectLaneServerErrorFallback(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -171,7 +171,7 @@ func TestDetectLaneServerErrorFallback(t *testing.T) {
 	}
 }
 
-// TestImportCredentialFileReadError 覆盖「路径存在但读不了」。
+// TestImportCredentialFileReadError covers the path exists but cannot be read case.
 func TestImportCredentialFileReadError(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := importCredentialFile(dir); err == nil ||
@@ -201,7 +201,7 @@ func TestAccountFromCredentialsPropagatesInvalidKey(t *testing.T) {
 	}
 }
 
-// TestHasSystemMessageIgnoresMalformed 覆盖 messages 里的脏数据。
+// TestHasSystemMessageIgnoresMalformed covers dirty data in messages.
 func TestHasSystemMessageIgnoresMalformed(t *testing.T) {
 	cases := []struct {
 		name string
@@ -223,7 +223,7 @@ func TestHasSystemMessageIgnoresMalformed(t *testing.T) {
 	}
 }
 
-// TestChatBodyFallbackDirtyMessages 覆盖 messages 里混入非对象条目时仍能兜底。
+// TestChatBodyFallbackDirtyMessages covers that fallback still works when non-object entries are mixed into messages.
 func TestChatBodyFallbackDirtyMessages(t *testing.T) {
 	body := []byte(`{"model":"m","messages":["oops",{"role":"user","content":"hi"}]}`)
 	out, ok := ChatBodyFallback(body, "自定义提示词")
@@ -254,8 +254,8 @@ func TestChatBodyFallbackDirtyMessages(t *testing.T) {
 	}
 }
 
-// TestDetectMachineRawNonWindows 只在非 Windows 上跑：Windows 分支会拉起
-// powershell（12s 超时），不适合放进单元测试。
+// TestDetectMachineRawNonWindows only runs on non-Windows: the Windows branch will spin up
+// powershell (12s timeout), not suitable for unit tests.
 func TestDetectMachineRawNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 分支依赖 powershell / reg，跳过")

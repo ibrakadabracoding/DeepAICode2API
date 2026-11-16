@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-// RandomHex 生成 n 字节的随机十六进制串。
+// RandomHex generates a random hex string of n bytes.
 func RandomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -20,22 +20,22 @@ func RandomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// RandomToken 生成 n 字节随机数的十六进制串（用于 OAuth state）。
+// RandomToken generates a hex string from n random bytes (used for OAuth state).
 func RandomToken(n int) string { return RandomHex(n) }
 
-// KeyFingerprint 返回 API Key 的 sha256 前 16 位十六进制。
+// KeyFingerprint returns the first 16 hex characters of the API Key's sha256.
 func KeyFingerprint(key string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
 	return hex.EncodeToString(sum[:8])
 }
 
-// ShortHash 返回 API Key 的短哈希，用于展示。
+// ShortHash returns a short hash of the API Key, used for display.
 func ShortHash(key string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(key)))
 	return hex.EncodeToString(sum[:4])
 }
 
-// MaskSecret 对敏感串脱敏，仅保留首尾片段。
+// MaskSecret masks a sensitive string, keeping only the leading and trailing fragments.
 func MaskSecret(s string) string {
 	if s == "" {
 		return ""
@@ -46,7 +46,7 @@ func MaskSecret(s string) string {
 	return s[:6] + "..." + s[len(s)-4:]
 }
 
-// HomeDir 返回当前用户主目录（失败时回落到当前目录）。
+// HomeDir returns the current user's home directory (falls back to the current directory on failure).
 func HomeDir() string {
 	if h, err := os.UserHomeDir(); err == nil && h != "" {
 		return h
@@ -57,14 +57,15 @@ func HomeDir() string {
 	return "."
 }
 
-// DesktopBaseDirs 返回本机 DeepAI Code 桌面端数据目录候选。
+// DesktopBaseDirs returns candidate data directories for the local DeepAI Code desktop app.
 //
-// 上游逻辑（apps/desktop/DesktopStatePaths.ts）：
+// Upstream logic (apps/desktop/DesktopStatePaths.ts):
 //
 //	baseDir = T3CODE_HOME || ~/.deepai-code
-//	stateDir = baseDir/userdata（开发模式且未显式指定时用 baseDir/dev）
 //
-// secrets 位于 stateDir/secrets。
+// stateDir = baseDir/userdata (in dev mode, when not explicitly specified, use baseDir/dev)
+//
+// secrets is located at stateDir/secrets.
 func DesktopBaseDirs(explicit string) []string {
 	if explicit != "" {
 		return []string{explicit}
@@ -79,10 +80,10 @@ func DesktopBaseDirs(explicit string) []string {
 	return dedupe(out)
 }
 
-// DesktopSecretDirs 把 baseDir 展开为可能包含 secrets 的目录。
+// DesktopSecretDirs expands baseDir into directories that may contain secrets.
 //
-// 同时接受 baseDir、stateDir、secrets 目录或凭据文件本身，
-// 方便用户直接把路径指到任意层级。
+// It also accepts baseDir, stateDir, the secrets directory, or the credential file itself,
+// so users can point the path at any level directly.
 func DesktopSecretDirs(explicit string) []string {
 	var out []string
 	for _, base := range DesktopBaseDirs(explicit) {
@@ -118,7 +119,7 @@ func dedupe(in []string) []string {
 	return out
 }
 
-// EnvOr 返回环境变量值或默认值。
+// EnvOr returns the environment variable value or a default.
 func EnvOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
@@ -126,7 +127,7 @@ func EnvOr(key, def string) string {
 	return def
 }
 
-// EnvInt 返回整型环境变量或默认值。
+// EnvInt returns an integer environment variable or a default.
 func EnvInt(key string, def int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		var n int
@@ -137,7 +138,7 @@ func EnvInt(key string, def int) int {
 	return def
 }
 
-// MaskProxy 只返回代理的 host:port（绝不泄露用户名/密码）。
+// MaskProxy returns only the proxy's host:port (never leaks username/password).
 func MaskProxy(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

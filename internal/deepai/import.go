@@ -10,26 +10,26 @@ import (
 	"time"
 )
 
-// 桌面端凭据文件名。
+// Desktop credential file name.
 const (
 	CredentialFile     = "deepai-account.bin"
 	CredentialUserFlag = "deepai-account-user-managed.bin"
 )
 
-// ImportResult 是一次桌面端凭据导入结果。
+// ImportResult is the result of one desktop credential import.
 type ImportResult struct {
 	Account *Account
 	Path    string
 }
 
-// ImportAllFromDesktop 扫描本机 DeepAI Code 桌面端的凭据文件。
+// ImportAllFromDesktop scans the local DeepAI Code desktop credential files.
 //
-// explicit 为空时自动探测 T3CODE_HOME / ~/.deepai-code；
-// 也可传入任意层级路径（baseDir / stateDir / secrets / 凭据文件）。
+// When explicit is empty, automatically detect T3CODE_HOME / ~/.deepai-code;
+// Any level path can also be passed (baseDir / stateDir / secrets / credential file).
 func ImportAllFromDesktop(explicit string) ([]ImportResult, error) {
 	dirs := DesktopSecretDirs(explicit)
 
-	// 直接指向凭据文件时优先读取它。
+	// If it points directly to a credential file, that file takes precedence.
 	if explicit != "" {
 		if info, err := os.Stat(explicit); err == nil && !info.IsDir() {
 			if res, err := importCredentialFile(explicit); err == nil {
@@ -83,7 +83,7 @@ func importCredentialFile(path string) (*ImportResult, error) {
 	return &ImportResult{Account: acct, Path: path}, nil
 }
 
-// AccountFromCredentials 把凭据转换为账号。
+// AccountFromCredentials converts credentials to an account.
 func AccountFromCredentials(cred *Credentials, source string) (*Account, error) {
 	if cred == nil {
 		return nil, errors.New("凭据为空")
@@ -95,7 +95,7 @@ func AccountFromCredentials(cred *Credentials, source string) (*Account, error) 
 	return acct, nil
 }
 
-// AccountFromAPIKey 校验并构造一个账号。
+// AccountFromAPIKey validates and constructs an account.
 func AccountFromAPIKey(key, username, source string, isPro bool) (*Account, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -125,7 +125,7 @@ func AccountFromAPIKey(key, username, source string, isPro bool) (*Account, erro
 	}, nil
 }
 
-// AccountFromRegistration 从网页注册链路的结果构造账号。
+// AccountFromRegistration constructs an account from the result of the web registration flow.
 func AccountFromRegistration(r Registration) (*Account, error) {
 	acct, err := AccountFromAPIKey(r.APIKey, r.Username, r.Source, strings.EqualFold(r.Plan, "pro"))
 	if err != nil {
@@ -173,7 +173,7 @@ func AccountFromRegistration(r Registration) (*Account, error) {
 	return acct, nil
 }
 
-// normalizeGroup 规范化分组名。
+// normalizeGroup normalizes the group name.
 func normalizeGroup(g string) string {
 	g = strings.TrimSpace(g)
 	if g == "" {
@@ -184,7 +184,7 @@ func normalizeGroup(g string) string {
 
 func timeNowUnix() int64 { return time.Now().Unix() }
 
-// EnvAccount 从 DEEPAI_API_KEY 环境变量构造账号（可选）。
+// EnvAccount constructs an account from the DEEPAI_API_KEY environment variable (optional).
 func EnvAccount() *Account {
 	key := strings.TrimSpace(os.Getenv("DEEPAI_API_KEY"))
 	if key == "" {

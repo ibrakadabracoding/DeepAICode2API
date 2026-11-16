@@ -27,13 +27,13 @@ func TestCheckInKey(t *testing.T) {
 	if got := checkInKey(&Account{APIKey: "sk-a"}); got != "sk-a" {
 		t.Fatalf("key = %q，期望 api key 本身", got)
 	}
-	// 同一账号不同字段不应影响 key（只有 API Key 参与隔离）。
+	// Fields other than the API Key must not affect the key (only the API Key isolates state).
 	if checkInKey(&Account{ID: "x", APIKey: "sk-a"}) != checkInKey(&Account{ID: "y", APIKey: "sk-a"}) {
 		t.Fatal("签到状态应按 API Key 隔离")
 	}
 }
 
-// TestStateForLazilyInitializes 覆盖零值 Client（未经过构造器）的兜底路径。
+// TestStateForLazilyInitializes covers the fallback path for a zero-value Client (one not built via the constructor).
 func TestStateForLazilyInitializes(t *testing.T) {
 	c := &Client{}
 	st := c.stateFor(nil)
@@ -71,8 +71,8 @@ func TestLockCheckInGuards(t *testing.T) {
 	c := NewClient()
 	acct := &Account{APIKey: "sk-lock"}
 
-	c.lockCheckIn(nil, time.Hour) // nil 账号不应 panic
-	c.lockCheckIn(acct, 0)        // 非正数不应加锁
+	c.lockCheckIn(nil, time.Hour) // a nil account must not panic
+	c.lockCheckIn(acct, 0)        // non-positive durations must not lock
 	c.lockCheckIn(acct, -time.Minute)
 	if got := c.CheckInRefusedUntil(acct); !got.IsZero() {
 		t.Fatalf("无效调用不应加锁，得到 %v", got)
@@ -83,13 +83,13 @@ func TestLockCheckInGuards(t *testing.T) {
 	if until.Before(time.Now().Add(59 * time.Minute)) {
 		t.Fatalf("锁到期时间应在 1h 后，得到 %v", until)
 	}
-	// 锁是按账号隔离的。
+	// Locks are isolated per account.
 	if got := c.CheckInRefusedUntil(&Account{APIKey: "sk-other"}); !got.IsZero() {
 		t.Fatalf("锁污染了其它账号: %v", got)
 	}
 }
 
-// TestCheckInReturnsDefensiveCopy 确认调用方改返回值不会污染缓存。
+// TestCheckInReturnsDefensiveCopy verifies that caller mutations of the return value do not pollute the cache.
 func TestCheckInReturnsDefensiveCopy(t *testing.T) {
 	c := NewClient()
 	acct := &Account{APIKey: "sk-ci"}
@@ -108,7 +108,7 @@ func TestCheckInReturnsDefensiveCopy(t *testing.T) {
 	}
 }
 
-// TestCaptureCheckInRejectsInvalid 覆盖非法/缺失 check_in 的静默忽略。
+// TestCaptureCheckInRejectsInvalid covers silent ignoring of invalid/missing check_in.
 func TestCaptureCheckInRejectsInvalid(t *testing.T) {
 	c := NewClient()
 	acct := &Account{APIKey: "sk-bad"}
@@ -116,9 +116,9 @@ func TestCaptureCheckInRejectsInvalid(t *testing.T) {
 		`not json`,
 		`{}`,
 		`{"check_in":null}`,
-		`{"check_in":{"nonce":"short","seconds":600}}`,                           // nonce 长度不对
-		`{"check_in":{"nonce":"` + strings.Repeat("g", 32) + `","seconds":600}}`, // 非 hex
-		`{"check_in":{"nonce":"` + strings.Repeat("a", 32) + `","seconds":0}}`,   // seconds 必须为正
+		`{"check_in":{"nonce":"short","seconds":600}}`,                           // wrong nonce length
+		`{"check_in":{"nonce":"` + strings.Repeat("g", 32) + `","seconds":600}}`, // not hex
+		`{"check_in":{"nonce":"` + strings.Repeat("a", 32) + `","seconds":0}}`,   // seconds must be positive
 	} {
 		c.captureCheckIn(acct, []byte(body))
 		if got := c.CheckIn(acct); got != nil {
@@ -127,7 +127,7 @@ func TestCaptureCheckInRejectsInvalid(t *testing.T) {
 	}
 }
 
-// TestEnsureCheckInSkipsWhileRefused 确认静默锁内完全不打上游。
+// TestEnsureCheckInSkipsWhileRefused verifies that nothing hits upstream while the silent lock is active.
 func TestEnsureCheckInSkipsWhileRefused(t *testing.T) {
 	called := 0
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -142,21 +142,21 @@ func TestEnsureCheckInSkipsWhileRefused(t *testing.T) {
 		t.Fatalf("静默锁内不应请求 /theos，实际调用了 %d 次", called)
 	}
 
-	// 解锁后（把锁过期时间拨到过去）应立即补签一次。
+	// After unlocking (moving the lock expiry into the past), a check-in should happen immediately.
 	c.stateFor(acct).refusedUntil = time.Now().Add(-time.Second)
 	c.EnsureCheckIn(context.Background(), acct)
 	if called != 1 {
 		t.Fatalf("解锁后应补签一次，实际 %d 次", called)
 	}
 
-	// checkInMinInterval 内的第二次调用应被节流。
+	// A second call within checkInMinInterval should be throttled.
 	c.EnsureCheckIn(context.Background(), acct)
 	if called != 1 {
 		t.Fatalf("节流窗口内不应重复签到，实际 %d 次", called)
 	}
 }
 
-// TestEnsureCheckInNilAccount 确认 nil 账号直接返回（推理前调用必须无副作用）。
+// TestEnsureCheckInNilAccount verifies that a nil account returns immediately (calls before inference must have no side effects).
 func TestEnsureCheckInNilAccount(t *testing.T) {
 	called := 0
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -168,12 +168,12 @@ func TestEnsureCheckInNilAccount(t *testing.T) {
 	}
 }
 
-// TestApplyCheckInHeadersBeacon 覆盖心跳的 pi 字段与 nonce 回传。
+// TestApplyCheckInHeadersBeacon covers the beacon's pi field and nonce echo.
 func TestApplyCheckInHeadersBeacon(t *testing.T) {
 	c := NewClient()
 	acct := &Account{APIKey: "sk-beacon"}
 
-	// 冷启动：没有 nonce、没有转发记录 → 只有心跳，pi=0。
+	// Cold start: no nonce, no relay record → beacon only, pi=0.
 	req := mustReq(t, c)
 	c.applyCheckInHeaders(req, acct)
 	beacon := req.Header.Get(HeaderBeacon)
@@ -187,7 +187,7 @@ func TestApplyCheckInHeadersBeacon(t *testing.T) {
 		t.Fatalf("无挑战时不应带 %s，得到 %q", HeaderCheckIn, got)
 	}
 
-	// 有挑战 + 刚转发过 → 带 nonce 且 pi=1。
+	// Challenge present + just relayed → nonce included and pi=1.
 	nonce := strings.Repeat("b", 32)
 	c.captureCheckIn(acct, []byte(`{"check_in":{"nonce":"`+nonce+`","seconds":600}}`))
 	c.markRelay(acct)
@@ -200,7 +200,7 @@ func TestApplyCheckInHeadersBeacon(t *testing.T) {
 		t.Fatalf("刚转发过时 pi 应为 1: %q", req.Header.Get(HeaderBeacon))
 	}
 
-	// 转发记录早于挑战 TTL → pi 回落 0。
+	// Relay record older than the challenge TTL → pi drops back to 0.
 	c.stateFor(acct).lastRelay = time.Now().Add(-time.Hour)
 	req = mustReq(t, c)
 	c.applyCheckInHeaders(req, acct)
@@ -209,7 +209,7 @@ func TestApplyCheckInHeadersBeacon(t *testing.T) {
 	}
 }
 
-// mustReq 构造一个用于检查请求头的最小请求（httptest 可避免真实网络与 handler 规则）。
+// mustReq builds a minimal request for header inspection (httptest avoids real network and handler rules).
 func mustReq(t *testing.T, c *Client) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, c.ModelURL(PathTheos), nil)

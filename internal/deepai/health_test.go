@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// 这一组测试锁的是「一次失败算不算账号坏了」的判据。
+// This group of tests locks down the criterion for whether a single failure counts as a broken account.
 //
-// 回归背景：旧实现把每次失败都写成 status=error 且永不清除，上游概率性的
-// EOF / 429 会让徽章长期停在 1/16（docs/changes.md §45）。
+// Regression background: the old implementation wrote every failure as status=error and never cleared it; probabilistic upstream
+// EOF / 429 would leave the badge stuck at 1/16 for a long time (docs/changes.md §45).
 
 func httpErr(status int, body string) error {
 	return &HTTPError{Op: "上游", Status: status, Body: []byte(body)}
@@ -38,7 +38,7 @@ func TestTransient(t *testing.T) {
 		{"social_login_required", httpErr(http.StatusForbidden, `{"error":{"code":"social_login_required"}}`), false},
 		{"纯文本 unexpected EOF", errors.New("Get \"https://api.deepai.org\": unexpected EOF"), true},
 		{"今日额度用尽", errors.New(`上游: DeepAI Code has restarted its check-in too many times today`), false},
-		// 额度到顶当天不会自愈：要如实显示成 degraded，不能当噪声抹掉。
+		// Hitting the quota cap does not self-heal within the same day: it must be shown truthfully as degraded, not erased as noise.
 		{"今日额度到顶（文本）", errors.New("查询 Theos: Too many requests today"), false},
 		{"今日额度到顶（429 体）", httpErr(http.StatusTooManyRequests, `{"error":{"message":"Too many requests today"}}`), false},
 		{"网络错误", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
@@ -71,8 +71,8 @@ func TestAccountReady(t *testing.T) {
 		{"blocked 永不就绪", &Account{Enabled: true, Status: StatusBlocked}, false},
 		{"新鲜的 error", &Account{Enabled: true, Status: StatusError, LastErrAt: fresh}, false},
 		{"陈旧的 error 算自愈", &Account{Enabled: true, Status: StatusError, LastErrAt: stale}, true},
-		// 老状态文件没有 last_err_at（=0）：按“历史噪声”处理，否则升级后
-		// 所有历史 error 号会一直显示不健康。
+		// Old state files have no last_err_at (=0): treat it as "historical noise", otherwise after upgrading
+		// all historical error accounts would keep showing as unhealthy.
 		{"缺 last_err_at 的 error", &Account{Enabled: true, Status: StatusError}, true},
 	}
 
@@ -104,11 +104,11 @@ func TestAccountDegraded(t *testing.T) {
 	}
 }
 
-// defaultStale 是 ErrorStaleAfter 的别名，单独取出来避免表里直接依赖常量名。
+// defaultStale is an alias for ErrorStaleAfter, extracted separately to avoid the table depending directly on the constant name.
 const defaultStale = ErrorStaleAfter
 
-// TestAccountReadyHonorsQuotaUntil 固化「当日额度用完」的调度跳过语义：
-// 到点前不可调度，到点自动恢复（不需要人工处理）。
+// TestAccountReadyHonorsQuotaUntil pins down the scheduling-skip semantics of "daily quota exhausted":
+// not schedulable before the reset time, automatically recovers at that time (no manual intervention needed).
 func TestAccountReadyHonorsQuotaUntil(t *testing.T) {
 	now := time.Now()
 	a := &Account{Enabled: true, Status: "ok"}

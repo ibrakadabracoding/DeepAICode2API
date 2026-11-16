@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestNewClientIsInferenceShaped 固化「推理客户端不带浏览器指纹」的约定。
+// TestNewClientIsInferenceShaped pins down the rule "the inference client carries no browser fingerprint".
 func TestNewClientIsInferenceShaped(t *testing.T) {
 	t.Setenv("DEEPAI_API_ORIGIN", "")
 	t.Setenv("HTTP_PROXY", "")
@@ -42,7 +42,7 @@ func TestNewClientIsInferenceShaped(t *testing.T) {
 	}
 }
 
-// TestOriginOverrideValidation 只接受 http/https 且有 host 的覆盖值。
+// TestOriginOverrideValidation only accepts overrides that are http/https and have a host.
 func TestOriginOverrideValidation(t *testing.T) {
 	cases := []struct {
 		raw  string
@@ -51,12 +51,12 @@ func TestOriginOverrideValidation(t *testing.T) {
 		{"", DefaultOrigin},
 		{"   ", DefaultOrigin},
 		{"http://127.0.0.1:9999", "http://127.0.0.1:9999"},
-		{"http://127.0.0.1:9999/", "http://127.0.0.1:9999"}, // 去掉尾部斜杠
+		{"http://127.0.0.1:9999/", "http://127.0.0.1:9999"}, // trailing slash stripped
 		{"https://staging.example.com/", "https://staging.example.com"},
-		{"ftp://example.com", DefaultOrigin}, // 协议不支持
-		{"https://", DefaultOrigin},          // 无 host
-		{"://bad", DefaultOrigin},            // 解析失败
-		{"api.deepai.org", DefaultOrigin},    // 无协议
+		{"ftp://example.com", DefaultOrigin}, // unsupported scheme
+		{"https://", DefaultOrigin},          // no host
+		{"://bad", DefaultOrigin},            // parse failure
+		{"api.deepai.org", DefaultOrigin},    // no scheme
 	}
 	for _, c := range cases {
 		t.Setenv("DEEPAI_API_ORIGIN", c.raw)
@@ -82,7 +82,7 @@ func TestNewClientWithFingerprintKeepsBrowserShape(t *testing.T) {
 func TestProxyWiring(t *testing.T) {
 	t.Setenv("DEEPAI_API_ORIGIN", "")
 
-	// 合法代理：写进 transport 的 Proxy 函数。
+	// Valid proxy: wired into the transport's Proxy function.
 	c := NewClientWithProxy("http://user:pw@10.0.0.9:8080")
 	if c.Proxy != "http://user:pw@10.0.0.9:8080" {
 		t.Fatalf("Proxy 字段 = %q（应原样保留，仅本地保存）", c.Proxy)
@@ -105,7 +105,7 @@ func TestProxyWiring(t *testing.T) {
 		t.Fatalf("Proxy 凭据丢失: %v", got.User)
 	}
 
-	// 非法代理：不应把 transport 弄坏（回落到环境代理）。
+	// Invalid proxy: must not break the transport (falls back to the environment proxy).
 	bad := NewClientWithProxy("://nope")
 	trBad := bad.HTTP.Transport.(*http.Transport)
 	if trBad.Proxy == nil {
@@ -137,7 +137,7 @@ func TestSignInURL(t *testing.T) {
 	}
 }
 
-// TestPostJSONEndpoints 覆盖 WebSearch / FindService 两条透传路径。
+// TestPostJSONEndpoints covers the two pass-through paths WebSearch / FindService.
 func TestPostJSONEndpoints(t *testing.T) {
 	type call struct {
 		path string
@@ -262,7 +262,7 @@ func TestTranscribe(t *testing.T) {
 		t.Fatalf("api-key 头 = %q", gotKey)
 	}
 	if gotField != "voiceRecording" || gotFile != `re"c.webm` {
-		// 解析器会把 \" 反转义回 "，所以这里比对的是原始文件名。
+		// The parser unescapes \" back to ", so compare against the original filename here.
 		t.Fatalf("字段/文件名 = %q / %q", gotField, gotFile)
 	}
 	if gotFileCT != "audio/webm" || gotFileB != "RIFFdata" {
@@ -282,7 +282,7 @@ func TestTranscribeDefaults(t *testing.T) {
 		_, _ = io.WriteString(w, `{"text":"ok"}`)
 	})
 
-	// 空文件名 / 类型应回落到 webm 默认值；无账号时不应写 api-key 头。
+	// Empty filename / type should fall back to the webm defaults; with no account the api-key header must not be written.
 	if _, err := c.Transcribe(context.Background(), nil, "", "", []byte("x")); err != nil {
 		t.Fatalf("Transcribe: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestEscapeQuotes(t *testing.T) {
 	}
 }
 
-// TestErrorClassificationHelpers 覆盖两个此前完全没测到的判定函数。
+// TestErrorClassificationHelpers covers two predicate functions that previously had no tests at all.
 func TestErrorClassificationHelpers(t *testing.T) {
 	if !mustErr(t, 403, `{"error":{"code":"email_unverified"}}`).EmailUnverified() {
 		t.Fatal("email_unverified 应判定为邮箱未验证")
@@ -423,7 +423,7 @@ func TestErrorClassificationHelpers(t *testing.T) {
 		}
 	}
 	if (*HTTPError)(nil) == nil {
-		_ = 0 // 仅为让 nil 检查显式可见
+		_ = 0 // only to make the nil check explicit
 	}
 
 	social := mustErr(t, 403, `{"error":{"code":"social_login_required"}}`)
@@ -457,7 +457,7 @@ func TestUsageSummaryErrors(t *testing.T) {
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
 	})
-	// 用量接口属于推理链路：换成推理形态后 UA 应为 node（注册形态会带 Chrome UA）。
+	// The usage endpoint belongs to the inference path: after switching to inference shape the UA should be node (the registration shape carries a Chrome UA).
 	c.BrowserFingerprint = false
 
 	body = `{"is_pro":true,"plan":"pro","credits_remaining":12.5}`
@@ -484,7 +484,7 @@ func TestUsageSummaryErrors(t *testing.T) {
 		t.Fatalf("非法 JSON 应报解析失败，得到 %v", err)
 	}
 
-	// JSON 可读即成功，字段缺失不算错误。
+	// Readable JSON means success; missing fields are not an error.
 	body = `{}`
 	if got, err := c.UsageSummary(context.Background(), nil); err != nil || got == nil {
 		t.Fatalf("空对象也应成功: %+v / %v", got, err)

@@ -18,17 +18,18 @@ import (
 	"time"
 )
 
-// maxJSONBytes 限制上游 JSON 响应体大小（模型目录 / 配额 / 搜索）。
+// maxJSONBytes caps the size of upstream JSON response bodies (model catalog /
+// quota / search).
 const maxJSONBytes = 8 << 20
 
-// HTTPError 是上游返回的非 2xx 响应。
+// HTTPError is a non-2xx response returned by the upstream.
 type HTTPError struct {
 	Op     string
 	Status int
 	Body   []byte
 }
 
-// Error 返回可读错误信息（优先使用上游 error.message）。
+// Error returns a readable error message (prefers the upstream error.message).
 func (e *HTTPError) Error() string {
 	var payload struct {
 		Error struct {
@@ -50,7 +51,7 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("%s: HTTP %d: %s", e.Op, e.Status, body)
 }
 
-// Code 返回上游 error.code。
+// Code returns the upstream error.code.
 func (e *HTTPError) Code() string {
 	var payload struct {
 		Error struct {
@@ -63,12 +64,12 @@ func (e *HTTPError) Code() string {
 	return ""
 }
 
-// Retryable 报告该错误是否值得换账号 / 重试。
+// Retryable reports whether the error is worth switching accounts / retrying.
 //
-// 400 / 404 / 422 是请求本身的问题，重试无意义；
-// 401 / 403 / 409 / 429 / 5xx 与账号或容量相关，可以重试。
-// 例外：策略类错误码（social_login_required / machine_required /
-// lane_version_unsupported）是账号或客户端终态，换号 / 重试都没用。
+// 400 / 404 / 422 are problems with the request itself; retrying is pointless;
+// 401 / 403 / 409 / 429 / 5xx relate to the account or capacity and can be retried.
+// Exception: policy error codes (social_login_required / machine_required /
+// lane_version_unsupported) are terminal states for the account or client; switching accounts / retrying is useless.
 func (e *HTTPError) Retryable() bool {
 	switch e.Code() {
 	case CodeSocialLogin, CodeMachineRequired, CodeLaneUnsupported:
@@ -83,7 +84,7 @@ func (e *HTTPError) Retryable() bool {
 	return e.Status >= 500
 }
 
-// AuthFailed 报告是否为账号鉴权失败。
+// AuthFailed reports whether this is an account authentication failure.
 func (e *HTTPError) AuthFailed() bool {
 	if e.Status == http.StatusUnauthorized {
 		return true
@@ -92,39 +93,39 @@ func (e *HTTPError) AuthFailed() bool {
 	return code == CodeAuthRequired || code == CodeInvalidAPIKey || code == CodeEmailUnverified
 }
 
-// SocialLoginRequired 报告账号是否被上游要求改用 Google/Apple 登录。
+// SocialLoginRequired reports whether the upstream requires the account to sign in with Google/Apple instead.
 //
-// 0.3.19 起上游对“邮箱 + 密码”注册的账号在 /theos 与推理端点返回 403；
-// 这是账号级策略拦截，不是鉴权失败，也不是可重试错误。
+// Since 0.3.19, the upstream returns 403 on /theos and inference endpoints for accounts registered with "email + password";
+// this is an account-level policy block, not an authentication failure, and not a retryable error.
 func (e *HTTPError) SocialLoginRequired() bool { return e.Code() == CodeSocialLogin }
 
-// MachineRequired 报告是否因缺少机器指纹被拒（计量模型专属）。
+// MachineRequired reports whether the request was rejected for lacking a machine fingerprint (metering-model specific).
 func (e *HTTPError) MachineRequired() bool { return e.Code() == CodeMachineRequired }
 
-// EmailUnverified 报告上游是否因邮箱未验证拒绝该账号。
+// EmailUnverified reports whether the upstream rejected the account because the email is unverified.
 //
-// 与普通 403 不同：账号的登录态无效，换不换号都一样，
-// 应标记后跳过（而不是当成可重试失败反复换号）。
+// Unlike a normal 403: the account's login state is invalid, so switching accounts makes no difference;
+// it should be marked and skipped (rather than treated as a retryable failure and repeatedly switching accounts).
 func (e *HTTPError) EmailUnverified() bool { return e.Code() == CodeEmailUnverified }
 
-// LaneUnsupported 报告车道版本不再被上游接受（426）。
+// LaneUnsupported reports that the lane version is no longer accepted by the upstream (426).
 func (e *HTTPError) LaneUnsupported() bool {
 	return e.Status == http.StatusUpgradeRequired || e.Code() == CodeLaneUnsupported
 }
 
-// BodyRejected 报告上游是否因“请求体不是 DeepAI Code 的形状”而拒绝。
+// BodyRejected reports whether the upstream rejected the request because "the request body is not the shape DeepAI Code sends".
 //
-// 上游对新车道加了请求体校验，典型响应是 400 + code=invalid_request_error，
-// message 有两种实测文案：
-//   - `This request is not one DeepAI Code sends.`（旧，2026-11-07 起）
-//   - `This request cannot be accepted.`（2026-11-13 起，0.3.36 时代）
+// The upstream added request body validation for new lanes; the typical response is 400 + code=invalid_request_error,
+// and message has two empirically observed texts:
+// - `This request is not one DeepAI Code sends.` (old, since 2026-11-07)
+// - `This request cannot be accepted.` (since 2026-11-13, the 0.3.36 era)
 //
-// 两版都要能识别：漏了新文案，ChatBodyFallback（补 system + 收敛字段）就不会重试，
-// 调用方直接吃 400。
+// Both versions must recognize it: if the new message is missed, ChatBodyFallback (adds system + normalizes fields) will not retry,
+// and the caller gets a 400 directly.
 //
-// 2026-11-15 起再加一层兜底：文案可能再次更换，而 code 一直是
-// invalid_request_error。只要 400 + 该 code 就按形状拒绝处理（仅 chat 路径会
-// 真正重试）；补形状后仍失败时，第二个错误会原样回传，不会把原因吞掉。
+// From 2026-11-15, add another fallback layer: the message may change again, while the code stays
+// invalid_request_error. As long as it is 400 + that code, treat it as a shape rejection (only the chat path will
+// actually retry); if it still fails after fixing the shape, the second error is returned as-is, without swallowing the cause.
 func (e *HTTPError) BodyRejected() bool {
 	if e.Status != http.StatusBadRequest {
 		return false
@@ -136,13 +137,13 @@ func (e *HTTPError) BodyRejected() bool {
 	return e.Code() == CodeInvalidReq
 }
 
-// QuotaExhausted 报告账号当日额度是否用完（付费模型 / 余额为负）。
+// QuotaExhausted reports whether the account's daily quota is used up (paid model / negative balance).
 func (e *HTTPError) QuotaExhausted() bool { return e.Code() == CodeTheosExhausted }
 
-// QuotaResetAt 解析额度类错误里的 refresh_at（RFC3339）。
+// QuotaResetAt parses refresh_at (RFC3339) from quota-type errors.
 //
-// body 形如 {"error":{"code":"theos_exhausted","refresh_at":"2026-11-14T00:05:52+00:00"}}；
-// 解析不到时用 fallback（调用方通常传 6h，与「Try again tomorrow」的节奏一致）。
+// body looks like {"error":{"code":"theos_exhausted","refresh_at":"2026-11-14T00:05:52+00:00"}};
+// when it cannot be parsed, use fallback (callers usually pass 6h, consistent with the "Try again tomorrow" cadence).
 func (e *HTTPError) QuotaResetAt(fallback time.Duration, now time.Time) time.Time {
 	var payload struct {
 		Error struct {
@@ -157,33 +158,33 @@ func (e *HTTPError) QuotaResetAt(fallback time.Duration, now time.Time) time.Tim
 	return now.Add(fallback)
 }
 
-// CheckInRefused 报告签到是否被上游按「当天重启次数」限流。
+// CheckInRefused reports whether check-in was rate-limited by the upstream based on "restarts per day".
 //
-// 它与账号不可用不同：推理照常 200，只是会落在替身模型分支
-// （见 docs/recon.md §5.1），因此不能把账号标成 error。
+// It differs from account unavailability: inference still returns 200 as usual, but falls into the stand-in model branch
+// (see docs/recon.md §5.1), so the account must not be marked as error.
 func (e *HTTPError) CheckInRefused() bool { return e.Code() == CodeCheckInRefused }
 
-// IsSocialLoginRequired 报告 err 是否为 social_login_required。
+// IsSocialLoginRequired reports whether err is social_login_required.
 func IsSocialLoginRequired(err error) bool {
 	var he *HTTPError
 	return errors.As(err, &he) && he.SocialLoginRequired()
 }
 
-// IsCheckInRefused 报告 err 是否为签到被限流（check_in_refused）。
+// IsCheckInRefused reports whether err is check-in rate-limited (check_in_refused).
 func IsCheckInRefused(err error) bool {
 	var he *HTTPError
 	return errors.As(err, &he) && he.CheckInRefused()
 }
 
-// CapacityWaiting 报告是否为“会话忙”的容量拒绝。
+// CapacityWaiting reports whether it is a capacity rejection for "session busy".
 func (e *HTTPError) CapacityWaiting() bool {
 	return e.Status == http.StatusConflict && e.Code() == "session_busy"
 }
 
-// RetryAfter 解析 Retry-After 头（秒），默认 fallback。
+// RetryAfter parses the Retry-After header (seconds), defaulting to fallback.
 //
-// 与桌面端 waitForDeepAICapacity 同形：可解析的秒数夹到 [1, 30]，
-// 头部缺失 / 非数字（含 HTTP-date）时才用调用方的 fallback。
+// Same shape as the desktop waitForDeepAICapacity: a parseable number of seconds is clamped to [1, 30],
+// and only when the header is missing / non-numeric (including HTTP-date) is the caller's fallback used.
 func RetryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 	raw := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if raw == "" {
@@ -202,10 +203,10 @@ func RetryAfter(resp *http.Response, fallback time.Duration) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// transientMarkers 是已知的“出口/网络抖动”错误特征。
+// transientMarkers are known "exit/network flakiness" error signatures.
 //
-// 有些代理会在隧道建立阶段返回自定义文案（例如 "No exit node"），
-// 它既不是 net.Error 也不包装 io.EOF，只能按文案识别。
+// Some proxies return custom messages during tunnel establishment (e.g. "No exit node"),
+// It is neither a net.Error nor wraps io.EOF, so it can only be identified by its message text.
 var transientMarkers = []string{
 	"no exit node",
 	"unexpected eof",
@@ -218,15 +219,15 @@ var transientMarkers = []string{
 	"temporary failure in name resolution",
 }
 
-// IsTransient 报告错误是否属于“再试一次可能成功”的瞬时故障。
+// IsTransient reports whether the error is a transient failure where "retrying may succeed".
 //
-// 用于 /theos 验活、入池探测这类关键路径的退避重试判断：
-// 网络抖动与 5xx/429 值得重试；4xx 是请求或账号本身的问题，重试无意义。
+// Used for backoff retry decisions on critical paths such as /theos liveness verification and account pool probing:
+// Network jitter and 5xx/429 are worth retrying; 4xx indicates a problem with the request or the account itself, so retrying is meaningless.
 func IsTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	// 调用方主动取消不算可重试。
+	// Active cancellation by the caller does not count as retryable.
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
@@ -254,9 +255,9 @@ func IsTransient(err error) bool {
 	return false
 }
 
-// Client 是 DeepAI 上游客户端。
+// Client is the DeepAI upstream client.
 //
-// 一个 Client 可以服务多个账号（按代理分桶复用），签到状态按 API Key 隔离。
+// A single Client can serve multiple accounts (reused in buckets by proxy), and check-in state is isolated by API Key.
 type Client struct {
 	Origin    string
 	HTTP      *http.Client
@@ -264,51 +265,51 @@ type Client struct {
 	UserAgent string
 	Proxy     string
 
-	// lane 是当前使用的 Theos 车道版本（atomic：探测/换道时会被并发读取）。
-	// 零值表示用编译期的 LaneVersion。
+	// lane is the currently used Theos lane version (atomic: read concurrently during probing/lane switching).
+	// A zero value means using the compile-time LaneVersion.
 	lane atomic.Value
 
-	// Instance 是进程级实例号（16 字节随机 hex），随所有 JSON 请求发出。
+	// Instance is the process-level instance ID (16-byte random hex), sent with all JSON requests.
 	Instance string
 
-	// BrowserFingerprint 决定是否把账号的浏览器指纹头（User-Agent /
-	// sec-ch-ua / Accept-Language）带到上游请求。
+	// BrowserFingerprint determines whether to carry the account's browser fingerprint headers (User-Agent /
+	// sec-ch-ua / Accept-Language) to upstream requests.
 	//
-	// 桌面端走 Node fetch，**从不发这些头**；带上去等于在推理接口上自报
-	// “我不是客户端”。注册链路需要它们（和网页注册时保持一致），
-	// 因此只有 NewClientWithFingerprint 打开它。
+	// The desktop client uses Node fetch and **never sends these headers**; sending them is equivalent to self-identifying on the inference API
+	// "I am not the client". The registration flow needs them (to stay consistent with web registration),
+	// so only NewClientWithFingerprint enables it.
 	BrowserFingerprint bool
 
-	// CheckInBudget 是推理前同步签到的等待预算（0 = 默认 10s）。
+	// CheckInBudget is the wait budget for synchronous check-in before inference (0 = default 10s).
 	//
-	// 只看不改语义：超过预算就带着已有 nonce 放行推理，下一轮再补。
-	// 控制台的「签到阻塞预算」通过 SetCheckInBudget 写它。
+	// Read-only, no semantic change: if the budget is exceeded, inference proceeds with the existing nonce, and it is replenished in the next round.
+	// The console's "check-in blocking budget" writes it via SetCheckInBudget.
 	CheckInBudget time.Duration
 
-	// checkIns 缓存每个 API Key 的签到挑战与心跳时间。
+	// checkIns caches the check-in challenge and heartbeat time for each API Key.
 	checkIns *checkInStore
 }
 
-// NewClient 构造上游客户端（默认读取环境代理）。
+// NewClient constructs the upstream client (reads the environment proxy by default).
 //
-// DEEPAI_API_ORIGIN 可覆盖上游地址（仅接受 http/https）。
+// DEEPAI_API_ORIGIN can override the upstream address (only http/https accepted).
 func NewClient() *Client { return inferClient(NewClientWithFingerprint("", "")) }
 
-// NewClientWithProxy 构造走指定代理的上游客户端。
+// NewClientWithProxy constructs an upstream client that goes through the specified proxy.
 func NewClientWithProxy(proxyRaw string) *Client {
 	return inferClient(NewClientWithFingerprint(proxyRaw, ""))
 }
 
-// inferClient 把客户端切成「推理形态」：不带浏览器指纹。
+// inferClient switches the client into "inference form": without the browser fingerprint.
 //
-// 注册链路专用 NewClientWithFingerprint（默认带账号的 Chrome 指纹）；
-// 其余调用点都是推理 / 探测，必须与桌面端一致。
+// NewClientWithFingerprint dedicated to the registration flow (carries the account's Chrome fingerprint by default);
+// all other call sites are inference / probing and must match the desktop client.
 func inferClient(c *Client) *Client {
 	c.BrowserFingerprint = false
 	return c
 }
 
-// NewClientWithFingerprint 构造带代理与 User-Agent 的上游客户端。
+// NewClientWithFingerprint constructs an upstream client with proxy and User-Agent.
 func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 	origin := strings.TrimRight(EnvOr("DEEPAI_API_ORIGIN", DefaultOrigin), "/")
 	if u, err := url.Parse(origin); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -339,19 +340,19 @@ func NewClientWithFingerprint(proxyRaw, userAgent string) *Client {
 		checkIns:           newCheckInStore(),
 		HTTP: &http.Client{
 			Transport: transport,
-			// 上游会 302 跳到登录页，跟随只会掩盖鉴权失败。
+			// The upstream returns a 302 redirect to the login page; following it would only mask authentication failures.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
 }
 
-// ModelURL 返回 /deepai_code 下的完整地址。
+// ModelURL returns the full address under /deepai_code.
 func (c *Client) ModelURL(path string) string { return c.Origin + ModelBasePath + path }
 
-// RootURL 返回根路径完整地址。
+// RootURL returns the full root path address.
 func (c *Client) RootURL(path string) string { return c.Origin + path }
 
-// SignInURL 返回桌面端同款浏览器登录地址。
+// SignInURL returns the same browser login address as the desktop client.
 func (c *Client) SignInURL(state string, port int) string {
 	u := c.ModelURL(PathSignIn)
 	q := url.Values{}
@@ -360,14 +361,14 @@ func (c *Client) SignInURL(state string, port int) string {
 	return u + "?" + q.Encode()
 }
 
-// desktopInferenceHeaders 复刻桌面端 Node fetch（undici）的默认请求头。
+// desktopInferenceHeaders replicates the default request headers of the desktop client's Node fetch (undici).
 //
-// 实测 Node 22 的全局 fetch 发出的是：
+// Empirically, Node 22's global fetch sends:
 //
 //	user-agent: node / accept: */* / accept-language: * / sec-fetch-mode: cors
 //
-// 没有浏览器的 UA，也没有 sec-ch-ua。网关此前把注册用的 Chrome 指纹带到
-// 推理请求上，与真实客户端不一致；这里按实测值对齐。
+// no browser UA, and no sec-ch-ua. The gateway previously carried the registration Chrome fingerprint over to
+// inference requests, which is inconsistent with the real client; here we align with the measured values.
 var desktopInferenceHeaders = map[string]string{
 	"User-Agent":      "node",
 	"Accept":          "*/*",
@@ -375,17 +376,17 @@ var desktopInferenceHeaders = map[string]string{
 	"Sec-Fetch-Mode":  "cors",
 }
 
-// commonHeaders 写入所有上游 JSON 请求的公共头。
+// commonHeaders writes the common headers for all upstream JSON requests.
 //
-// Content-Type 无条件设置（含无 body 的 GET）：桌面端 requestDeepAIJson 的
-// header 字面量对 /models、/theos、/get_usage_summary 同样带 application/json。
+// Content-Type is set unconditionally (including bodyless GETs): the desktop client's requestDeepAIJson
+// header literal also includes application/json for /models, /theos, and /get_usage_summary.
 func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(HeaderLane, c.laneVersion())
 	if c.Instance != "" {
 		req.Header.Set(HeaderInstance, c.Instance)
 	}
-	// 机器指纹优先取账号级：上游按它发放每日免费额度，共用会互相抵消。
+	// Machine fingerprint prefers the account-level one: the upstream grants the daily free quota based on it, and sharing it would cancel each other out.
 	machine := c.Machine
 	if acct != nil && acct.MachineID != "" {
 		if fp := MachineFingerprint(acct.MachineID); fp != "" {
@@ -396,18 +397,18 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 		req.Header.Set(HeaderMachine, machine)
 	}
 
-	// 两种指纹形态二选一，不混用：
-	//   - BrowserFingerprint=true：注册链路，带账号的 Chrome 指纹；
-	//   - 否则：与桌面端推理一致，只带 Node fetch 的默认头。
+	// Choose one of the two fingerprint forms; do not mix them:
+	// - BrowserFingerprint=true: registration flow, carrying the account's Chrome fingerprint;
+	// - Otherwise: consistent with desktop inference, only carry Node fetch's default headers.
 	//
-	// 注意：这里不能 return —— 后面还有 Api-Key（鉴权头）要写。
+	// Note: cannot return here - there is still Api-Key (authentication header) to write afterwards.
 	if !c.BrowserFingerprint {
 		for k, v := range desktopInferenceHeaders {
 			req.Header.Set(k, v)
 		}
 	} else {
 		req.Header.Set("Accept", "application/json")
-		// 指纹头也优先取账号级：注册与推理必须用同一套特征。
+		// Fingerprint headers also prefer account-level: registration and inference must use the same set of features.
 		ua := c.UserAgent
 		if acct != nil && acct.UserAgent != "" {
 			ua = acct.UserAgent
@@ -433,15 +434,15 @@ func (c *Client) commonHeaders(req *http.Request, acct *Account) {
 	}
 }
 
-// laneGuessAhead 是车道探测向上猜测的步数（上游可能先抬车道再发客户端）。
+// laneGuessAhead is the number of steps to guess upward during lane detection (the upstream may raise the lane before sending to the client).
 const laneGuessAhead = 6
 
-// laneCandidates 返回车道探测序列：编译期默认值优先，其次向上猜更新的车道，
-// 最后用旧车道兜底。
+// laneCandidates returns the lane detection sequence: compile-time default first, then guess upward for newer lanes,
+// and finally fall back to the old lane.
 //
-// 顺序不能反过来：`/models` 对旧车道很宽容（0.3.37 时代车道 5 / 6 都回 200），
-// 从旧值开始试会把网关永久钉在旧车道上 —— 车道 6 的目录与 5 并不相同
-// （`contextWindow` 全部收敛到 320000），钉在 5 上等于继续冒充旧客户端。
+// The order cannot be reversed: `/models` is very lenient with old lanes (in the 0.3.37 era, both lanes 5 / 6 returned 200),
+// starting from the old value will permanently pin the gateway to the old lane - the catalog of lane 6 is not the same as 5
+// (`contextWindow` all converge to 320000), pinning to 5 is equivalent to continuing to impersonate an old client.
 func laneCandidates() []string {
 	base, err := strconv.Atoi(LaneVersion)
 	if err != nil {
@@ -457,12 +458,12 @@ func laneCandidates() []string {
 	return out
 }
 
-// SetLane 设置当前车道（空串 = 用编译期默认值）。
+// SetLane sets the current lane (empty string = use compile-time default).
 func (c *Client) SetLane(lane string) {
 	c.lane.Store(strings.TrimSpace(lane))
 }
 
-// laneVersion 返回本次请求要发的车道版本。
+// laneVersion returns the lane version to send with this request.
 func (c *Client) laneVersion() string {
 	if v, ok := c.lane.Load().(string); ok && v != "" {
 		return v
@@ -470,15 +471,15 @@ func (c *Client) laneVersion() string {
 	return LaneVersion
 }
 
-// Lane 返回当前生效的车道版本。
+// Lane returns the currently effective lane version.
 func (c *Client) Lane() string { return c.laneVersion() }
 
-// DetectLane 用 /models 探测可用的车道版本。
+// DetectLane probes the available lane version using /models.
 //
-// 2026-11-14 起 /models 也要求 Api-Key（不带一律 401 auth_required，见
-// docs/recon.md §2），所以探测必须带上一个账号凭据；acct 为 nil 时发匿名
-// 请求，上游会回 401，此时探测只会得到「鉴权失败」而无法判断车道。
-// 命中即写回 Client，后续请求自动带新车道；全部候选失败时返回最后一个错误。
+// Since 2026-11-14, /models also requires Api-Key (without it, always 401 auth_required, see
+// docs/recon.md §2), so detection must carry an account credential; when acct is nil, send an anonymous
+// request, the upstream will return 401, and detection will only get "authentication failed" and cannot determine the lane.
+// On a hit, write back to Client immediately, and subsequent requests automatically carry the new lane; if all candidates fail, return the last error.
 func (c *Client) DetectLane(ctx context.Context, acct *Account) (string, error) {
 	var lastErr error
 	for _, lane := range laneCandidates() {
@@ -497,18 +498,18 @@ func (c *Client) DetectLane(ctx context.Context, acct *Account) (string, error) 
 	return "", lastErr
 }
 
-// laneWorks 用候选车道请求一次 /models。
+// laneWorks requests /models once with the candidate lane.
 //
-// 只有 2xx 才算通过：5xx 说明上游抖动而不是车道不对，继续试下一个候选；
-// 401 说明缺凭据（上游 2026-11-14 起对 /models 也要求 Api-Key），
-// 与车道无关，同样继续试但结果必然是全部失败。
+// Only 2xx counts as passing: 5xx means upstream flakiness rather than a wrong lane, so continue trying the next candidate;
+// 401 means missing credentials (since 2026-11-14 the upstream also requires Api-Key for /models),
+// Unrelated to the lane; retries continue as well, but the result is guaranteed to be total failure.
 func (c *Client) laneWorks(ctx context.Context, lane string, acct *Account) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
 	if err != nil {
 		return false, err
 	}
 	c.commonHeaders(req, acct)
-	req.Header.Set(HeaderLane, lane) // 覆盖成待测值
+	req.Header.Set(HeaderLane, lane) // Overwrite with the value under test
 	resp, err := c.do(req)
 	if err != nil {
 		return false, err
@@ -518,12 +519,12 @@ func (c *Client) laneWorks(ctx context.Context, lane string, acct *Account) (boo
 	return resp.StatusCode/100 == 2, nil
 }
 
-// do 发送请求并返回原样响应（调用方负责关闭 Body）。
+// do sends the request and returns the response as-is (the caller is responsible for closing Body).
 //
-// 3xx 一律归一成 401：上游对无效 Key 会 302 跳到登录页。跟随会把鉴权失败
-// 伪装成 200（所以 CheckRedirect 返回 ErrUseLastResponse），而原样透传在
-// API 客户端那边又是个没有 Location 的裸 3xx。统一成 auth_required 后，
-// 调用方会标账号失败并换号，客户端拿到的是可识别的 401。
+// All 3xx are normalized to 401: for an invalid Key, the upstream returns 302 to the login page. Following it would turn the authentication failure
+// into a fake 200 (hence CheckRedirect returns ErrUseLastResponse), while passing it through as-is on
+// the API client side is a bare 3xx without Location. After unifying to auth_required,
+// the caller marks the account as failed and switches accounts, and the client receives a recognizable 401.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -543,18 +544,18 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-// FetchModels 拉取上游模型目录（2026-11-14 起必须带 Api-Key）。
+// FetchModels fetches the upstream model catalog (as of 2026-11-14, Api-Key is required).
 //
-// 曾经的结论是「上游目录不随账号变化，带 / 不带 `Api-Key` 返回同一份目录」，
-// 因此刻意保持免凭据。**2026-11-14 实测失效**：不带 Key 一律
-// 401 `{"code":"auth_required","message":"Sign in to DeepAI to use DeepAI Code."}`，
-// 带任意账号的 Key 才 200（见 docs/recon.md §2）。所以：
-//   - acct 非 nil 时带该账号的 Key（目录与账号无关，随便一个就行）；
-//   - acct 为 nil 时仍发匿名请求：只用于「没有账号时的连通性探测」，
-//     上游会回 401，调用方据此区分「链路通」与「拉目录成功」。
+// The earlier conclusion was "the upstream catalog does not vary by account; with or without `Api-Key`, the same catalog is returned",
+// so it was deliberately kept credential-free. **Empirically invalidated on 2026-11-14**: without a Key, requests are always
+// 401 `{"code":"auth_required","message":"Sign in to DeepAI to use DeepAI Code."}`,
+// return 200 only when carrying the Key of any account (see docs/recon.md §2). Therefore:
+// - When acct is non-nil, include that account's Key (the catalog is independent of the account, so any one will do);
+// - When acct is nil, still send an anonymous request: used only for "connectivity probing when there is no account",
+// the upstream returns 401, and the caller uses this to distinguish "link is up" from "catalog fetch succeeded".
 //
-// 注意上游目录**会变**：2026-11-14 一次实测从 21 个涨到 27 个（新增 6 个
-// 免费 / 付费模型，无下线）。目录是缓存，重启或手动刷新才会更新。
+// Note that the upstream catalog **does change**: in one measurement on 2026-11-14, it grew from 21 to 27 (6 new
+// free / paid models, with none removed). The catalog is cached and updates only on restart or manual refresh.
 func (c *Client) FetchModels(ctx context.Context, acct *Account) ([]Model, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathModels), nil)
 	if err != nil {
@@ -604,17 +605,17 @@ func (c *Client) FetchModels(ctx context.Context, acct *Account) ([]Model, strin
 	return models, def, nil
 }
 
-// OpenModel 发起一次推理请求，返回未经读取的响应。
+// OpenModel initiates one inference request and returns the unread response.
 //
-// path 取 PathChat 或 PathResponses；affinity 会作为 X-Session-Affinity
-// 透传（上游据此做会话粘性调度）。
+// path is PathChat or PathResponses; affinity is passed through as X-Session-Affinity
+// passed through (the upstream uses it for session-sticky scheduling).
 func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body []byte, affinity string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ModelURL(path), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	c.commonHeaders(req, acct)
-	// 桌面端在转发推理前会记一次 lastRelayAt，心跳里的 pi 字段由此得来。
+	// Before forwarding inference, the desktop client records lastRelayAt once; the pi field in the heartbeat is derived from this.
 	c.markRelay(acct)
 	if affinity != "" {
 		req.Header.Set(HeaderAffinity, affinity)
@@ -622,10 +623,10 @@ func (c *Client) OpenModel(ctx context.Context, acct *Account, path string, body
 	return c.do(req)
 }
 
-// Theos 查询账号的免费额度 / 余额。
+// Theos queries the account's free quota / balance.
 //
-// 0.3.19 起 /theos 同时是签到通道：响应（包括 403 拒绝）带 check_in，
-// 下一次请求把 nonce 回传并附带心跳。
+// Since 0.3.19, /theos is also the check-in channel: the response (including a 403 rejection) carries check_in,
+// and the next request sends the nonce back along with a heartbeat.
 func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ModelURL(PathTheos), nil)
 	if err != nil {
@@ -640,18 +641,18 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	// 请求带上了 nonce 就说明这一次是「回传」：签到完成（403 拒绝也算，
-	// 桌面端对拒绝同样记一次 noteCheckIn）。
+	// If the request carries a nonce, it means this one is a "callback": check-in is complete (a 403 rejection counts too,
+	// and the desktop client likewise records a noteCheckIn for a rejection).
 	c.markAcked(acct, sentNonce)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJSONBytes))
 	if err != nil {
 		return nil, err
 	}
-	// 无论成功还是拒绝，都先吃掉签到挑战：上游在 403 里也会下发。
+	// Whether it succeeds or is rejected, consume the check-in challenge first: the upstream also issues it in a 403.
 	c.captureCheckIn(acct, body)
 	if resp.StatusCode/100 != 2 {
 		httpErr := &HTTPError{Op: "查询 Theos", Status: resp.StatusCode, Body: body}
-		// 签到被当日限流：给账号上静默锁，避免 EnsureCheckIn 每 30s 再撞一次。
+		// Check-in is rate-limited for the day: apply a silent lock to the account so EnsureCheckIn does not hit it again every 30s.
 		if httpErr.CheckInRefused() {
 			c.lockCheckIn(acct, CheckInRefusedLock)
 		}
@@ -665,11 +666,11 @@ func (c *Client) Theos(ctx context.Context, acct *Account) (*Allowance, error) {
 	return &out, nil
 }
 
-// UsageSummary 查询账号订阅 / 用量。
+// UsageSummary queries the account's subscription / usage.
 //
-// 与桌面端一致：这个根路径请求**不覆盖** User-Agent（保持 Node fetch 的
-// `node`）。`DeepAI-Code` 这个 UA 只属于 /gravity-display-proxy 赞助位渲染
-// （见 DesktopUserAgent），带到用量接口上反而又是一个异常信号。
+// Consistent with the desktop client: this root-path request does **not** override the User-Agent (it keeps Node fetch's
+// `node`). The `DeepAI-Code` UA belongs only to /gravity-display-proxy sponsored-slot rendering
+// (see DesktopUserAgent); carrying it over to the usage endpoint would just be another anomaly signal.
 func (c *Client) UsageSummary(ctx context.Context, acct *Account) (*UsageSummary, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.RootURL(PathUsageSummary), nil)
 	if err != nil {
@@ -696,12 +697,12 @@ func (c *Client) UsageSummary(ctx context.Context, acct *Account) (*UsageSummary
 	return &out, nil
 }
 
-// WebSearch 调用上游联网搜索能力。
+// WebSearch calls the upstream web search capability.
 func (c *Client) WebSearch(ctx context.Context, acct *Account, payload []byte) ([]byte, error) {
 	return c.postJSON(ctx, acct, PathWebSearch, payload, "联网搜索")
 }
 
-// FindService 调用上游服务推荐能力。
+// FindService calls the upstream service recommendation capability.
 func (c *Client) FindService(ctx context.Context, acct *Account, payload []byte) ([]byte, error) {
 	return c.postJSON(ctx, acct, PathFindService, payload, "服务搜索")
 }
@@ -728,7 +729,7 @@ func (c *Client) postJSON(ctx context.Context, acct *Account, path string, paylo
 	return body, nil
 }
 
-// Transcribe 把音频转发到上游语音转文字接口。
+// Transcribe forwards audio to the upstream speech-to-text endpoint.
 func (c *Client) Transcribe(ctx context.Context, acct *Account, filename, contentType string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("音频内容为空")
@@ -792,7 +793,7 @@ func (c *Client) Transcribe(ctx context.Context, acct *Account, filename, conten
 	return strings.TrimSpace(out.Text), nil
 }
 
-// ExchangeCode 用桌面端登录回调里的 code 换取 API Key。
+// ExchangeCode exchanges the code from the desktop client's login callback for an API Key.
 func (c *Client) ExchangeCode(ctx context.Context, code string) (*Credentials, error) {
 	payload, _ := json.Marshal(map[string]string{"code": code})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ModelURL(PathExchange), bytes.NewReader(payload))

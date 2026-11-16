@@ -10,23 +10,23 @@ import (
 )
 
 func TestMachineFingerprint(t *testing.T) {
-	// 必须是 sha256 十六进制（64 位小写）。
+	// Must be a sha256 hex string (64 lowercase characters).
 	got := MachineFingerprint("11111111-2222-3333-4444-555555555555")
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(got) {
 		t.Fatalf("指纹格式错误: %q", got)
 	}
-	// 大小写与首尾空白应归一。
+	// Case and leading/trailing whitespace should be normalized.
 	if again := MachineFingerprint("  11111111-2222-3333-4444-555555555555  "); again != got {
 		t.Fatalf("同一 UUID 的不同写法应得到同一指纹: %q vs %q", again, got)
 	}
 	if upper := MachineFingerprint("11111111-2222-3333-4444-555555555555"); upper != got {
 		t.Fatalf("大小写应归一: %q vs %q", upper, got)
 	}
-	// 空串返回空串（调用方据此不发请求头）。
+	// An empty string returns an empty string (the caller uses this to skip sending the header).
 	if MachineFingerprint("") != "" || MachineFingerprint("   ") != "" {
 		t.Fatal("空输入应返回空指纹")
 	}
-	// 不同 UUID 必须不同指纹。
+	// Different UUIDs must produce different fingerprints.
 	if MachineFingerprint("a") == MachineFingerprint("b") {
 		t.Fatal("不同输入得到了相同指纹")
 	}
@@ -47,7 +47,7 @@ func TestNewMachineUUID(t *testing.T) {
 	}
 }
 
-// 账号级机器指纹必须覆盖进程级默认值 —— 这是免费额度能按号发放的前提。
+// The account-level machine fingerprint must override the process-level default - this is the prerequisite for issuing free quota per account.
 func TestClientPerAccountMachine(t *testing.T) {
 	var got []string
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -78,14 +78,14 @@ func TestClientPerAccountMachine(t *testing.T) {
 	if got[0] == got[1] {
 		t.Fatal("两个账号不应共用同一机器指纹（会导致额度互斥）")
 	}
-	// 没有账号级指纹时回退到进程级。
+	// Fall back to the process-level fingerprint when there is no account-level fingerprint.
 	if got[2] != c.Machine {
 		t.Fatalf("无账号指纹时应回退到进程级 %q，实际 %q", c.Machine, got[2])
 	}
 }
 
 func TestTheosUsesAccountMachine(t *testing.T) {
-	// /theos 决定额度归属，必须用账号自己的指纹。
+	// /theos determines quota ownership, so the account's own fingerprint must be used.
 	var seen string
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		seen = r.Header.Get(HeaderMachine)
@@ -114,7 +114,7 @@ func TestRegistrationCarriesMachineID(t *testing.T) {
 	if acct.MachineID != "dddddddd-4444-4444-8444-444444444444" {
 		t.Fatalf("注册信息里的机器指纹丢失: %q", acct.MachineID)
 	}
-	// 首尾空白应被裁剪。
+	// Leading and trailing whitespace should be trimmed.
 	acct2, err := AccountFromRegistration(Registration{
 		APIKey: "sk-abc", Email: "a@b.com", MachineID: "  eeee  ",
 	})
@@ -127,7 +127,7 @@ func TestRegistrationCarriesMachineID(t *testing.T) {
 }
 
 func TestMachineUUIDIsStableThroughFingerprint(t *testing.T) {
-	// 同一账号多次请求必须发同一个指纹，否则上游会认为机器在漂移。
+	// The same account must send the same fingerprint across multiple requests; otherwise the upstream will consider the machine to be drifting.
 	id := NewMachineUUID()
 	if id == "" {
 		t.Fatal("生成 UUID 失败")
@@ -143,7 +143,7 @@ func TestMachineUUIDIsStableThroughFingerprint(t *testing.T) {
 	}
 }
 
-// 推理侧必须复用注册时的浏览器指纹，否则“Chrome 注册 + 空 UA 推理”本身就是异常信号。
+// The inference side must reuse the browser fingerprint from registration; otherwise "Chrome registration + empty UA inference" is itself an anomaly signal.
 func TestClientPerAccountFingerprintHeaders(t *testing.T) {
 	var got http.Header
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +180,7 @@ func TestClientPerAccountFingerprintHeaders(t *testing.T) {
 }
 
 func TestClientFallsBackToClientFingerprint(t *testing.T) {
-	// 没有账号级指纹时（桌面端导入 / 手工添加）回退到客户端默认值。
+	// Fall back to the client default when there is no account-level fingerprint (desktop import / manual addition).
 	var got http.Header
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
@@ -193,13 +193,13 @@ func TestClientFallsBackToClientFingerprint(t *testing.T) {
 	if v := got.Get("User-Agent"); v != "fallback-ua/2" {
 		t.Fatalf("User-Agent = %q，期望回退值", v)
 	}
-	// 账号没有指纹时不发指纹头，避免发空值。
+	// Do not send the fingerprint header when the account has no fingerprint, to avoid sending an empty value.
 	if v := got.Get("Accept-Language"); v != "" {
 		t.Fatalf("无账号指纹时不应发送 Accept-Language，实际 %q", v)
 	}
 }
 
-// 与 0.3.37 桌面端 parseLinuxMachineId 对齐：32 位小写 hex、非全 0。
+// Aligned with the 0.3.37 desktop parseLinuxMachineId: 32 lowercase hex characters, not all zeros.
 func TestParseLinuxMachineID(t *testing.T) {
 	cases := []struct {
 		raw, want string
@@ -209,9 +209,9 @@ func TestParseLinuxMachineID(t *testing.T) {
 		{"00000000000000000000000000000000", ""},
 		{"", ""},
 		{"not-a-machine-id", ""},
-		{"0123456789abcdef0123456789abcde", ""},   // 31 位
-		{"0123456789abcdef0123456789abcdef0", ""}, // 33 位
-		{"0123456789abcdef0123456789abcdeg", ""},  // 非 hex
+		{"0123456789abcdef0123456789abcde", ""},   // 31 characters
+		{"0123456789abcdef0123456789abcdef0", ""}, // 33 characters
+		{"0123456789abcdef0123456789abcdeg", ""},  // non-hex
 	}
 	for _, c := range cases {
 		if got := parseLinuxMachineID(c.raw); got != c.want {

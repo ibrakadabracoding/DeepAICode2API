@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// TestMain 固定机器指纹，避免每个测试都去读 SMBIOS（Windows 下要起 powershell）。
-// MachineID 带 sync.Once，必须在任何 Client 构造前设置。
+// TestMain fixes the machine fingerprint so every test doesn't have to read SMBIOS (which starts powershell on Windows).
+// MachineID uses a sync.Once and must be set before any Client is constructed.
 func TestMain(m *testing.M) {
 	os.Setenv("DEEPAI_MACHINE_ID", "11111111-2222-3333-4444-555555555555")
 	os.Exit(m.Run())
@@ -105,7 +105,7 @@ func TestHTTPErrorCodeAndMessage(t *testing.T) {
 }
 
 func TestHTTPErrorTruncatesLongBody(t *testing.T) {
-	// 上游异常时会回吐 HTML / 堆栈，不能整段塞进错误串再写进日志。
+	// When the upstream errors out it returns HTML / stack traces; don't stuff the whole thing into the error string and write it to the log.
 	long := strings.Repeat("A", 1000)
 	got := mustErr(t, 502, long).Error()
 	if !strings.HasSuffix(got, "…") {
@@ -137,11 +137,11 @@ func TestRetryAfter(t *testing.T) {
 		{"", fallback},
 		{"3", 3 * time.Second},
 		{"1", time.Second},
-		{"999", 30 * time.Second}, // 上限 30s，避免被上游拖死
-		{"0", time.Second},        // 与桌面端一致：夹到下限 1s
-		{"-5", time.Second},       // 负数同样夹到 1s
-		{"abc", fallback},         // 非数字回退
-		{"Wed, 21 Oct", fallback}, // HTTP-date 不支持，回退
+		{"999", 30 * time.Second}, // Cap at 30s to avoid being dragged down by the upstream
+		{"0", time.Second},        // Consistent with the desktop client: clamp to the 1s lower bound
+		{"-5", time.Second},       // Negative numbers are likewise clamped to 1s
+		{"abc", fallback},         // Fall back on non-numeric values
+		{"Wed, 21 Oct", fallback}, // HTTP-date is not supported; fall back
 	}
 	for _, c := range cases {
 		if got := RetryAfter(resp(c.header), fallback); got != c.want {
@@ -150,7 +150,7 @@ func TestRetryAfter(t *testing.T) {
 	}
 }
 
-// newTestClient 构造指向本地假上游的客户端。
+// newTestClient builds a client pointed at a local fake upstream.
 func newTestClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(h)
@@ -220,9 +220,9 @@ func TestClientEmptyAffinityOmitsHeader(t *testing.T) {
 	}
 }
 
-// 上游对无效 Key 会 302 到登录页：既不跟随（会把鉴权失败伪装成 200），
-// 也不透传裸 3xx（API 客户端拿到没有 Location 的 302 无法处理），
-// 而是归一成 401 auth_required —— 调用方才能标账号失败并换号。
+// The upstream 302s to the login page for an invalid Key: we neither follow it (which would disguise an authentication failure as 200),
+// nor pass through the bare 3xx (an API client can't handle a 302 with no Location),
+// but normalize it to 401 auth_required - only then can the caller mark the account as failed and switch accounts.
 func TestClientDoesNotFollowRedirects(t *testing.T) {
 	var finalHits int
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -274,13 +274,13 @@ func TestFetchModels(t *testing.T) {
 	}
 }
 
-// /models 与车道探测的凭据契约（2026-11-14 起反转）。
+// Credential contract for /models and lane probing (reversed as of 2026-11-14).
 //
-// 旧契约是「刻意不带任何凭据」，依据是上游目录不随账号变化、带不带 Key
-// 返回同一份。**2026-11-14 实测失效**：不带 Api-Key 一律 401 auth_required。
-// 现在：给账号就必须带上该账号的 Key（否则目录 / 车道探测全是 401），
-// 但仍不该带签到或 beacon 这类「推理会话」的头 —— 它们与拉目录无关，
-// 发出去只会被上游当成一次可疑的签到调用。
+// The old contract was "deliberately send no credentials at all", on the grounds that the upstream catalog doesn't vary by account and that with or without a Key it
+// returns the same thing. **Empirically broken as of 2026-11-14**: without an Api-Key it's always 401 auth_required.
+// Now: if an account is given, its Key must be sent (otherwise catalog / lane probing is all 401),
+// but headers for "inference sessions" like check-in or beacon still shouldn't be sent - they're unrelated to fetching the catalog,
+// sending them only makes the upstream treat it as a suspicious check-in call.
 func TestModelsAndLaneProbeCarryAccountKeyOnly(t *testing.T) {
 	var mu sync.Mutex
 	var headers []http.Header
@@ -298,7 +298,7 @@ func TestModelsAndLaneProbeCarryAccountKeyOnly(t *testing.T) {
 	if _, err := c.DetectLane(context.Background(), acct); err != nil {
 		t.Fatalf("DetectLane: %v", err)
 	}
-	// 匿名调用仍然允许（预热 / 连通性探测用）：只是不发送 Api-Key。
+	// Anonymous calls are still allowed (for warm-up / connectivity probing): just don't send an Api-Key.
 	if _, _, err := c.FetchModels(context.Background(), nil); err != nil {
 		t.Fatalf("FetchModels(nil): %v", err)
 	}
@@ -328,7 +328,7 @@ func TestModelsAndLaneProbeCarryAccountKeyOnly(t *testing.T) {
 
 func TestFetchModelsNormalizes(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		// 无 default、有重复 ID、有空 ID。
+		// No default, duplicate IDs, empty IDs.
 		_, _ = io.WriteString(w, `{"models":[{"id":"a"},{"id":"a"},{"id":""},{"id":"b","input":["text","image"]}]}`)
 	})
 	models, def, err := c.FetchModels(context.Background(), nil)
@@ -390,7 +390,7 @@ func TestTheosReturnsHTTPError(t *testing.T) {
 	}
 }
 
-// asHTTPError 是 errors.As 的薄包装，避免测试文件重复 import errors 语义混淆。
+// asHTTPError is a thin wrapper around errors.As, so test files don't repeatedly import errors and confuse the semantics.
 func asHTTPError(err error, target **HTTPError) bool {
 	e, ok := err.(*HTTPError)
 	if ok {
@@ -418,8 +418,8 @@ func TestJSONBodyIsVerbatim(t *testing.T) {
 	}
 }
 
-// IsTransient 决定关键路径要不要退避重试，误判的代价是浪费一次重试
-// 或把一个本该救回的账号判死。
+// IsTransient decides whether the critical path should back off and retry; a misjudgment costs one wasted retry
+// or wrongly mark an account that should have been recovered as dead.
 func TestIsTransient(t *testing.T) {
 	cases := []struct {
 		name string
@@ -450,7 +450,7 @@ func TestIsTransient(t *testing.T) {
 	}
 }
 
-// 车道 4 的签到握手：/theos 下发 check_in，下一次请求回传 nonce 与心跳。
+// Lane 4 check-in handshake: /theos issues check_in, and the next request returns the nonce and heartbeat.
 func TestTheosCheckInHandshake(t *testing.T) {
 	var (
 		mu     sync.Mutex
@@ -493,7 +493,7 @@ func TestTheosCheckInHandshake(t *testing.T) {
 	}
 }
 
-// 403 拒绝里也会带 check_in，必须照样吃掉，否则永远签不上到。
+// 403 rejections also carry check_in, which must be consumed as well, otherwise check-in will never succeed.
 func TestTheosCapturesCheckInFromRefusal(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -511,7 +511,7 @@ func TestTheosCapturesCheckInFromRefusal(t *testing.T) {
 	}
 }
 
-// 策略类错误是终态：不能换号重试，也不能被当成可重试 403。
+// Policy errors are terminal states: they cannot be retried with another account, nor treated as retryable 403.
 func TestHTTPErrorPolicyClassification(t *testing.T) {
 	social := mustErr(t, http.StatusForbidden, `{"error":{"code":"social_login_required"}}`)
 	if !social.SocialLoginRequired() || social.Retryable() {
@@ -525,13 +525,13 @@ func TestHTTPErrorPolicyClassification(t *testing.T) {
 	if !lane.LaneUnsupported() || lane.Retryable() {
 		t.Fatalf("lane_version_unsupported 应识别为车道错误且不可重试: %+v", lane)
 	}
-	// 普通 403 仍然可换号。
+	// Ordinary 403s can still switch accounts.
 	if !mustErr(t, http.StatusForbidden, `{}`).Retryable() {
 		t.Fatal("普通 403 应保持可重试")
 	}
 }
 
-// 400 形状拒绝 -> 桌面端字段白名单 + 补 system 消息。
+// 400 shape rejection -> desktop field whitelist + append system message.
 func TestChatBodyFallback(t *testing.T) {
 	body := []byte(`{"model":"m","stream":true,"user":"u1","messages":[{"role":"user","content":"hi"}],"tools":[]}`)
 	rejected := mustErr(t, http.StatusBadRequest,
@@ -567,8 +567,8 @@ func TestChatBodyFallback(t *testing.T) {
 	}
 }
 
-// 文案再次更换时，400 + code=invalid_request_error 仍要按形状拒绝处理；
-// 其它 400（上下文超限、鉴权等）不能误判，否则会拿改动过的 body 白重试一次。
+// When the wording changes again, 400 + code=invalid_request_error must still be handled as a shape rejection;
+// Other 400s (context overflow, authentication, etc.) must not be misjudged, otherwise a modified body will be retried in vain once.
 func TestBodyRejectedFallsBackToInvalidRequestCode(t *testing.T) {
 	unknown := mustErr(t, http.StatusBadRequest,
 		`{"error":{"message":"Something new entirely.","type":"invalid_request_error",`+
@@ -593,7 +593,7 @@ func TestBodyRejectedFallsBackToInvalidRequestCode(t *testing.T) {
 	}
 }
 
-// 已带 system 的请求不应被重复插入。
+// Requests that already have a system message should not have another inserted.
 func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
 	out, ok := ChatBodyFallback(body, "")
@@ -607,8 +607,8 @@ func TestChatBodyFallbackKeepsExistingSystem(t *testing.T) {
 	}
 }
 
-// 推理客户端必须与桌面端一致：Node fetch 不发 User-Agent / sec-ch-ua /
-// Accept-Language，网关带上去等于在推理接口自报“我不是客户端”。
+// The inference client must match the desktop: Node fetch does not send User-Agent / sec-ch-ua /
+// Accept-Language; adding them at the gateway is equivalent to declaring "I am not the client" on the inference endpoint.
 func TestInferenceClientOmitsBrowserFingerprint(t *testing.T) {
 	var got http.Header
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -627,7 +627,7 @@ func TestInferenceClientOmitsBrowserFingerprint(t *testing.T) {
 	if _, err := c.OpenModel(context.Background(), acct, PathChat, []byte(`{"model":"x"}`), ""); err != nil {
 		t.Fatalf("OpenModel: %v", err)
 	}
-	// 桌面端走 Node fetch：UA 是 node，没有 sec-ch-ua / Accept-Language 指纹。
+	// The desktop uses Node fetch: the UA is node, with no sec-ch-ua / Accept-Language fingerprint.
 	if v := got.Get("User-Agent"); v != "node" {
 		t.Errorf("推理请求的 UA 应为 node，实际 %q", v)
 	}
@@ -641,7 +641,7 @@ func TestInferenceClientOmitsBrowserFingerprint(t *testing.T) {
 	}
 }
 
-// 注册链路继续带浏览器指纹（与网页注册时的特征保持一致）。
+// The registration path continues to carry the browser fingerprint (consistent with the characteristics of web registration).
 func TestRegisterClientKeepsBrowserFingerprint(t *testing.T) {
 	var got http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -666,9 +666,9 @@ func TestRegisterClientKeepsBrowserFingerprint(t *testing.T) {
 	}
 }
 
-// 形状回退不能顺手改掉采样条件：seed / service_tier / stream_options
-// 会改变采样与用量上报，指纹类检测甚至会因此换一个候选模型。
-// store 则是桌面端每次请求都带的字段，必须同样保留。
+// Shape fallback must not incidentally alter sampling conditions: seed / service_tier / stream_options
+// would change sampling and usage reporting, and fingerprint-based detection may even switch to a different candidate model because of it.
+// store, however, is a field the desktop sends on every request and must likewise be preserved.
 func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],` +
 		`"seed":7,"service_tier":"flex","stream":true,"store":false,` +
@@ -696,9 +696,9 @@ func TestChatBodyFallbackKeepsSamplingFields(t *testing.T) {
 	}
 }
 
-// GET 请求也要与桌面端同形：requestDeepAIJson 的 header 字面量对无 body 的
-// /models、/theos、/get_usage_summary 一样带 Content-Type: application/json，
-// 且 /get_usage_summary 不覆盖 UA（只有 /gravity-display-proxy 用 DeepAI-Code）。
+// GET requests must also match the desktop shape: the header literal of requestDeepAIJson, for bodyless
+// /models, /theos, and /get_usage_summary, likewise carries Content-Type: application/json,
+// and /get_usage_summary does not override the UA (only /gravity-display-proxy uses DeepAI-Code).
 func TestGetRequestsMatchDesktopHeaders(t *testing.T) {
 	type seen struct {
 		path        string
@@ -714,7 +714,7 @@ func TestGetRequestsMatchDesktopHeaders(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"enabled":true}`)
 	})
-	c.BrowserFingerprint = false // 推理形态：UA 应为 node
+	c.BrowserFingerprint = false // Inference shape: the UA should be node
 	acct := &Account{APIKey: "k"}
 
 	if _, _, err := c.FetchModels(context.Background(), nil); err != nil {
@@ -737,11 +737,11 @@ func TestGetRequestsMatchDesktopHeaders(t *testing.T) {
 	}
 }
 
-// 拿到 nonce 后必须尽快回传：上游把「完成签到」当作真实模型分支的准入条件，
-// 只拉不回传等于没签到（docs/recon.md §5.1）。
+// After obtaining the nonce, it must be sent back as soon as possible: the upstream treats "completing check-in" as an admission condition for the real model branch,
+// Pulling only without sending back is equivalent to not checking in (docs/recon.md §5.1).
 //
-// 没有 ackedNonce 时 EnsureCheckIn 会在 seconds/2（300s）内直接返回，
-// 冷启动后的头 5 分钟推理都还没签到。
+// When there is no ackedNonce, EnsureCheckIn returns directly within seconds/2 (300s),
+// In the first 5 minutes after a cold start, inference has not checked in yet.
 func TestEnsureCheckInAcksPromptly(t *testing.T) {
 	var (
 		mu     sync.Mutex
@@ -758,7 +758,7 @@ func TestEnsureCheckInAcksPromptly(t *testing.T) {
 	acct := &Account{APIKey: "k-ack"}
 	ctx := context.Background()
 
-	// 模拟启动探测：只拿到挑战，还没回传。
+	// Simulate startup probing: only the challenge is obtained, not yet sent back.
 	if _, err := c.Theos(ctx, acct); err != nil {
 		t.Fatalf("Theos: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestEnsureCheckInAcksPromptly(t *testing.T) {
 		t.Fatalf("首次请求不应带 nonce，实际 %q", got)
 	}
 
-	// 推理前补签到：必须立刻回传，而不是等半衰期。
+	// Supplement check-in before inference: it must be sent back immediately, rather than waiting for the half-life.
 	c.EnsureCheckIn(ctx, acct)
 	if len(header) != 2 {
 		t.Fatalf("应立刻补一次 /theos，实际请求数 %d", len(header))
@@ -778,15 +778,15 @@ func TestEnsureCheckInAcksPromptly(t *testing.T) {
 		t.Fatalf("补签到应带心跳，实际 %q", b)
 	}
 
-	// 已回传且未到半衰期 → 不再打扰上游。
+	// Already sent back and half-life not reached → do not disturb the upstream again.
 	c.EnsureCheckIn(ctx, acct)
 	if len(header) != 2 {
 		t.Fatalf("已签到后不应重复请求，实际 %d", len(header))
 	}
 }
 
-// 签到被限流（check_in_refused）不是账号坏：推理仍 200，只是落在替身分支。
-// 必须能和 social_login_required 区分开，否则好号会被标成 error。
+// Check-in being rate-limited (check_in_refused) does not mean the account is bad: inference still returns 200, it just falls on the substitute branch.
+// It must be distinguishable from social_login_required; otherwise, a good account will be marked as error.
 func TestCheckInRefusedDetection(t *testing.T) {
 	e := mustErr(t, http.StatusForbidden, `{"error":{"type":"check_in_refused","code":"check_in_refused"}}`)
 	if !IsCheckInRefused(e) {
@@ -798,15 +798,15 @@ func TestCheckInRefusedDetection(t *testing.T) {
 	if e.AuthFailed() {
 		t.Fatal("不应被当成鉴权失败")
 	}
-	// 其它 403 不应误判。
+	// Other 403s should not be misjudged.
 	if IsCheckInRefused(mustErr(t, http.StatusForbidden, `{"error":{"code":"social_login_required"}}`)) {
 		t.Fatal("social_login_required 不应识别为 check_in_refused")
 	}
 }
 
-// check_in_refused 之后必须静默锁住签到：403 里仍会下发新的 check_in，
-// 不锁的话 needAck 分支会让 EnsureCheckIn 每 30s（checkInMinInterval）
-// 再撞一次 /theos —— 自己制造一场签到风暴（docs/recon.md §5.1）。
+// After check_in_refused, check-in must be silently locked: the 403 still issues a new check_in,
+// If not locked, the needAck branch will make EnsureCheckIn, every 30s (checkInMinInterval),
+// hit /theos again - creating a check-in storm on its own (docs/recon.md §5.1).
 func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
 	var mu sync.Mutex
 	hits := 0
@@ -825,7 +825,7 @@ func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
 		defer mu.Unlock()
 		return hits
 	}
-	// 绕过 checkInMinInterval（30s）的节流：本用例只验证「锁」本身。
+	// Bypass the checkInMinInterval (30s) throttling: this test case only verifies the "lock" itself.
 	resetAttempt := func() {
 		st := c.stateFor(acct)
 		c.checkIns.mu.Lock()
@@ -848,7 +848,7 @@ func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
 		t.Fatalf("锁期内不应再打 /theos，实际 %d 次", got)
 	}
 
-	// 锁到期后允许再试一次（仍被拒就重新续锁）。
+	// After the lock expires, allow one more retry (if still rejected, renew the lock).
 	st := c.stateFor(acct)
 	c.checkIns.mu.Lock()
 	st.refusedUntil = time.Now().Add(-time.Second)
@@ -860,7 +860,7 @@ func TestEnsureCheckInHonorsRefusalLock(t *testing.T) {
 	}
 }
 
-// 车道探测：只有 /models 接受的车道才算命中，命中后所有请求自动带上它。
+// Lane detection: only a lane accepted by /models counts as a hit; after a hit, all requests automatically carry it.
 func TestDetectLanePicksAcceptedLane(t *testing.T) {
 	var mu sync.Mutex
 	var lanes []string
@@ -892,7 +892,7 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 		t.Fatalf("命中车道 = %q / Lane() = %q，期望 %q", lane, c.Lane(), LaneVersion)
 	}
 
-	// 之后的请求直接带新车道。
+	// Subsequent requests directly carry the new lane.
 	if _, err := c.Theos(context.Background(), &Account{APIKey: "k"}); err != nil {
 		t.Fatalf("Theos: %v", err)
 	}
@@ -904,10 +904,10 @@ func TestDetectLanePicksAcceptedLane(t *testing.T) {
 	}
 }
 
-// 探测必须从编译期车道开始，不能先试旧车道。
+// Detection must start from the compile-time lane, and must not try the old lane first.
 //
-// `/models` 对旧车道很宽容（0.3.37 时代 5 / 6 都 200），若候选序列以旧值开头，
-// DetectLane 第一次就命中旧车道，网关会一直冒充旧客户端。
+// `/models` is very tolerant of old lanes (in the 0.3.37 era, both 5 / 6 returned 200); if the candidate sequence starts with the old value,
+// DetectLane hits the old lane on the first try, and the gateway will keep impersonating the old client.
 func TestDetectLaneStartsAtCompiledLane(t *testing.T) {
 	want := laneCandidates()
 	if len(want) == 0 || want[0] != LaneVersion {
@@ -920,7 +920,7 @@ func TestDetectLaneStartsAtCompiledLane(t *testing.T) {
 		mu.Lock()
 		probed = append(probed, r.Header.Get(HeaderLane))
 		mu.Unlock()
-		// 所有车道都接受：探测应当第一次就停在编译期车道。
+		// All lanes accept: the probe should stop at the compile-time lane on the first attempt.
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"models":[]}`)
 	})
@@ -940,7 +940,7 @@ func TestDetectLaneStartsAtCompiledLane(t *testing.T) {
 	}
 }
 
-// 所有候选车道都被拒时返回错误，且不改变当前车道。
+// When all candidate lanes are rejected, return an error without changing the current lane.
 func TestDetectLaneAllRejected(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUpgradeRequired)

@@ -6,16 +6,16 @@ import (
 	"strings"
 )
 
-// SSEEvent 是一个 Server-Sent Events 事件。
+// SSEEvent is a Server-Sent Events event.
 type SSEEvent struct {
 	ID    string
 	Event string
 	Data  string
 }
 
-// ReadSSE 按 SSE 规范解析事件流。
+// ReadSSE parses the event stream according to the SSE specification.
 //
-// 上游会在同一事件里发送多行 data，规范要求以 "\n" 拼接后整体分发。
+// The upstream may send multiple data lines within the same event; the specification requires joining them with "\n" and dispatching them as a whole.
 func ReadSSE(r io.Reader, fn func(SSEEvent) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -43,7 +43,7 @@ func ReadSSE(r io.Reader, fn func(SSEEvent) error) error {
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
-			continue // 注释 / 心跳
+			continue // Comment / heartbeat
 		}
 		field, value, _ := strings.Cut(line, ":")
 		value = strings.TrimPrefix(value, " ")
@@ -63,7 +63,7 @@ func ReadSSE(r io.Reader, fn func(SSEEvent) error) error {
 	return dispatch()
 }
 
-// WriteSSE 写入一条 SSE data 事件。
+// WriteSSE writes a single SSE data event.
 func WriteSSE(w io.Writer, payload []byte) error {
 	if _, err := w.Write([]byte("data: ")); err != nil {
 		return err
@@ -75,7 +75,7 @@ func WriteSSE(w io.Writer, payload []byte) error {
 	return err
 }
 
-// WriteSSEEvent 写入带 event 名的 SSE 事件（Anthropic / Responses 使用）。
+// WriteSSEEvent writes an SSE event with an event name (used by Anthropic / Responses).
 func WriteSSEEvent(w io.Writer, event string, payload []byte) error {
 	if event != "" {
 		if _, err := io.WriteString(w, "event: "+event+"\n"); err != nil {
