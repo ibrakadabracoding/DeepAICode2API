@@ -1,9 +1,10 @@
-// Package retry 提供基于「瞬时错误」判定的退避重试。
+// Package retry provides backoff retry based on "transient error" classification.
 //
-// 网关里存在多处「失败就再来一次」的逻辑（/theos 验活、入池配额探测、
-// 代理连通性检查）。它们共享同一条判据（deepai.IsTransient）但各自
-// 手写退避循环，容易在改动时漏掉某一处。统一到这里后，
-// 「重试几次、每次等多久、什么错误不重试」只有一处定义。
+// The gateway has several "retry on failure" paths (/theos liveness checks, quota
+// probing on pool entry, proxy connectivity checks). They share the same predicate
+// (deepai.IsTransient) but each hand-rolled a backoff loop, and a change could easily
+// miss one of them. After unifying here, "how many retries, how long each wait, and
+// which errors are not retried" is defined in exactly one place.
 package retry
 
 import (
@@ -11,18 +12,19 @@ import (
 	"time"
 )
 
-// Classifier 报告错误是否值得重试。
+// Classifier reports whether an error is worth retrying.
 type Classifier func(error) bool
 
-// Do 执行 fn；失败且 retryable 判定可重试时，按 delays 依次退避后重试。
+// Do runs fn; when it fails and retryable says it is retryable, back off according to
+// delays and retry.
 //
-// 语义：
-//   - delays 为空表示只尝试一次；
-//   - 首次失败即被 retryable 判为不可重试时，立刻返回该错误；
-//   - 显式把 ctx 传进 fn，便于每次尝试各自设置超时；
-//   - ctx 在退避期间到期时返回最后一次的错误（不再发起新尝试）。
+// Semantics:
+//   - empty delays means a single attempt;
+//   - if the first failure is classified as non-retryable, return that error immediately;
+//   - ctx is explicitly passed to fn so each attempt can set its own timeout;
+//   - if ctx expires during backoff, return the last error (no new attempt is made).
 //
-// 返回 nil 表示某次尝试成功。
+// A nil return means some attempt succeeded.
 func Do(ctx context.Context, delays []time.Duration, retryable Classifier, fn func(context.Context) error) error {
 	var lastErr error
 	for attempt := 0; ; attempt++ {
@@ -43,7 +45,7 @@ func Do(ctx context.Context, delays []time.Duration, retryable Classifier, fn fu
 	}
 }
 
-// sleep 等待 d，ctx 到期时返回 false。
+// sleep waits for d and returns false when ctx expires.
 func sleep(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return true

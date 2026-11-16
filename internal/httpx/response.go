@@ -1,9 +1,11 @@
-// Package httpx 收拢网关里与业务无关的 HTTP 工具：JSON 响应、错误信封、
-// 请求体解码、gzip 中间件与错误状态码映射。
+// Package httpx collects business-agnostic HTTP utilities for the gateway: JSON
+// responses, error envelopes, request body decoding, the gzip middleware, and error
+// status code mapping.
 //
-// 这些函数原先住在 internal/server 里，与 83 个文件、14.6k 行的路由/协议/
-// 管理台代码混在一起。它们是纯叶子：只依赖标准库、deepai 的 HTTPError 与
-// store 的状态码常量，不碰 *Server，因此可以整体抽出、单独测试。
+// These functions used to live in internal/server, mixed in with 83 files and 14.6k
+// lines of routing/protocol/console code. They are pure leaves: they depend only on
+// the standard library, deepai's HTTPError, and store's status code constants, never
+// touching *Server, so they could be extracted wholesale and tested in isolation.
 package httpx
 
 import (
@@ -14,7 +16,7 @@ import (
 	"time"
 )
 
-// WriteJSON 写出一个 JSON 响应。
+// WriteJSON writes a JSON response.
 func WriteJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
@@ -23,24 +25,24 @@ func WriteJSON(w http.ResponseWriter, code int, v any) {
 	}
 }
 
-// WriteErr 写出网关统一错误信封。
+// WriteErr writes the gateway's unified error envelope.
 //
-// code 字段放的是 HTTP 状态码（历史行为，前端按 error.type 分类，
-// 不依赖 code 的语义）。
+// The code field holds the HTTP status code (historical behavior; the front end
+// categorizes by error.type and does not rely on the semantics of code).
 func WriteErr(w http.ResponseWriter, code int, msg, typ string) {
 	WriteJSON(w, code, map[string]any{
 		"error": map[string]any{"message": msg, "type": typ, "code": code},
 	})
 }
 
-// WriteRawJSON 直接写出已生成的 JSON 字节，避免再次序列化。
+// WriteRawJSON writes already-generated JSON bytes directly, avoiding re-serialization.
 func WriteRawJSON(w http.ResponseWriter, code int, raw []byte) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	_, _ = w.Write(raw)
 }
 
-// ContextWithTimeout 给请求上下文加超时。
+// ContextWithTimeout adds a timeout to the request context.
 func ContextWithTimeout(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.Context(), d)
 }

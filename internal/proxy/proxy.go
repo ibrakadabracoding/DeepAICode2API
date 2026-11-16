@@ -1,8 +1,8 @@
-// Package proxy 提供号池共用的代理池：轮询分配、脱敏标签与代理文件读取。
+// Package proxy provides the shared proxy pool for the account pool: rotation, redacted labels, and proxy file reading.
 //
-// 历史背景：代理池原本长在注册链路内部（internal/register）。邮箱注册模块
-// 移除后，号池仍需要"按账号分出口"（上游每日免费额度按出口 IP 共享），
-// 所以把它拆成独立包，不再依赖任何注册/收信逻辑。
+// Historical context: the proxy pool originally lived inside the registration flow (internal/register). The email registration module
+// was removed, but the account pool still needs "per-account egress" (the upstream daily free quota is shared per egress IP),
+// so it was split into an independent package that no longer depends on any registration/receiving logic.
 package proxy
 
 import (
@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-// ProxyPool 是线程安全的轮询代理池。
+// ProxyPool is a thread-safe rotating proxy pool.
 type ProxyPool struct {
 	entries []string
 
@@ -21,10 +21,10 @@ type ProxyPool struct {
 	next int
 }
 
-// NewProxyPool 解析代理列表；raw 为空时返回 (nil, nil)。
+// NewProxyPool parses the proxy list; returns (nil, nil) when raw is empty.
 //
-// 支持换行 / 逗号 / 分号分隔，元素必须是完整 URL：
-// http://user:pass@host:port、https://... 或 socks5://...
+// Supports newline / comma / semicolon separators; each element must be a full URL:
+// http://user:pass@host:port, https://... or socks5://...
 func NewProxyPool(raw string) (*ProxyPool, error) {
 	entries := ParseProxyList(raw)
 	if len(entries) == 0 {
@@ -44,7 +44,7 @@ func NewProxyPool(raw string) (*ProxyPool, error) {
 	return &ProxyPool{entries: entries}, nil
 }
 
-// ParseProxyList 把多行 / 逗号分隔的代理串解析为列表（去空、去重、去注释）。
+// ParseProxyList parses a multi-line / comma-separated proxy string into a list (trims empties, deduplicates, strips comments).
 func ParseProxyList(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -64,7 +64,7 @@ func ParseProxyList(raw string) []string {
 	return out
 }
 
-// Len 返回代理数量。
+// Len returns the number of proxies.
 func (p *ProxyPool) Len() int {
 	if p == nil {
 		return 0
@@ -72,7 +72,7 @@ func (p *ProxyPool) Len() int {
 	return len(p.entries)
 }
 
-// Next 轮询返回一个代理；池为空时返回空串。
+// Next returns a proxy in rotation; returns an empty string when the pool is empty.
 func (p *ProxyPool) Next() string {
 	if p == nil || len(p.entries) == 0 {
 		return ""
@@ -84,7 +84,7 @@ func (p *ProxyPool) Next() string {
 	return raw
 }
 
-// ProxyLabel 返回不含凭据的 host:port（用于日志 / 控制台）。
+// ProxyLabel returns host:port without credentials (for logs / console).
 func ProxyLabel(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -97,7 +97,7 @@ func ProxyLabel(raw string) string {
 	return u.Host
 }
 
-// ReadProxyFile 读取代理文件（每行一个，支持 # 注释）。
+// ReadProxyFile reads a proxy file (one per line, supports # comments).
 func ReadProxyFile(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

@@ -10,12 +10,12 @@ import (
 	"time"
 )
 
-// 后台任务与一次性命令（导入 / 封存）。
-// 这一组都以「进程级」为前提：不接受请求作用域的 ctx，退出由 stop 通道控制。
+// Background tasks and one-shot commands (import / seal).
+// This group all assumes process-level scope: does not accept request-scoped ctx; exit is controlled by the stop channel.
 
 func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
-	// 首个目录拉取：与监听并行，失败只影响模型清单，不影响服务可用。
-	// 用独立 ctx：即使 stop 关闭也让它自己超时结束，不阻塞退出流程。
+	// Initial catalog fetch: runs in parallel with listening; failure only affects the model list, not service availability.
+	// Use an independent ctx: even if stop is closed, let it time out on its own without blocking the exit flow.
 	{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		models, err := srv.RefreshModels(ctx)
@@ -32,11 +32,11 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 	modelTick := time.NewTicker(6 * time.Hour)
 	defer modelTick.Stop()
 
-	// 连接预热：按号池里实际用到的出口各打一次 /models，把 DNS/TCP/TLS
-	// （含代理 CONNECT）提前做完。首个真实推理请求就少付一次整段握手。
+	// Connection warm-up: hit /models once per egress actually used in the account pool, completing DNS/TCP/TLS
+	// (including proxy CONNECT) in advance. The first real inference request then avoids paying for a full handshake.
 	//
-	// 放在独立 goroutine 里且失败静默：预热是纯优化，不能因为某个代理
-	// dead 就拖慢监听或记错误日志。总预算 60s 与请求路径完全无关。
+	// Run in a separate goroutine and fail silently: warm-up is purely an optimization; it must not, just because some proxy
+	// is dead, slow down listening or log errors. The total 60s budget is completely unrelated to the request path.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -52,8 +52,8 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-saveTick.C:
-			// status=error 只代表“上一次请求失败”。没再出现新失败就说明那是历史噪声，
-			// 把它改回 ok，否则徽章 / 账号列表会永远灰着（docs/changes.md §45）。
+			// status=error only means "the last request failed". If no new failure appears, that was historical noise,
+			// change it back to ok, otherwise the badge / account list will stay gray forever (docs/changes.md §45).
 			if n := st.RecoverStaleErrors(time.Now()); n > 0 {
 				log.Printf("[decay] %d 个账号的错误标记已超过 %s 未复现，重置为 ok", n, deepai.ErrorStaleAfter)
 			}
@@ -73,11 +73,11 @@ func background(st *store.Store, srv *server.Server, stop <-chan struct{}) {
 	}
 }
 
-// quotaGuard 是后台额度守护：按 refresh_at / 陈旧度分批复探，
-// 不再需要人工点「刷新全部配额」（653 号全量探测要 11 分钟）。
+// quotaGuard is a background quota guard: re-probes in batches by refresh_at / staleness,
+// no longer requiring manual clicking of "Refresh All Quotas" (a full probe, No. 653, takes 11 minutes).
 //
-// 单独一个 goroutine 而不是塞进 background：上游挂住时一批要几分钟
-// （24 个 / 4 并发 × 20s 超时），会拖住 30s 的周期保存。
+// A separate goroutine instead of stuffing it into background: when upstream hangs, one batch takes several minutes
+// (24 items / 4 concurrency × 20s timeout), which would hold up the 30s periodic save.
 func quotaGuard(srv *server.Server, stop <-chan struct{}) {
 	tick := time.NewTicker(server.QuotaGuardInterval)
 	defer tick.Stop()
@@ -93,7 +93,7 @@ func quotaGuard(srv *server.Server, stop <-chan struct{}) {
 	}
 }
 
-// autoImport 在启动时尝试导入本机桌面端凭据。
+// autoImport attempts to import local desktop credentials at startup.
 func autoImport(st *store.Store, dir string) {
 	results, err := deepai.ImportAllFromDesktop(dir)
 	if err != nil {
@@ -142,10 +142,10 @@ func runImport(st *store.Store, dir string) {
 	fmt.Printf("共导入 %d 个账号（新增 %d，更新 %d）→ %s\n", len(results), added, updated, st.Path())
 }
 
-// runSeal 执行一次性存量封存：把主文件、统计与日志里的明文全部改写为密文。
+// runSeal performs a one-time seal of existing data: rewrites all plaintext in the main file, stats, and logs as ciphertext.
 //
-// 与普通 Save 的区别：Save 只重写「之后变化」的内容，append-only 的日志
-// 不会被回填，所以需要单独的 -seal 入口。
+// Difference from regular Save: Save only rewrites content that changes afterward; append-only logs
+// are not backfilled, so a separate -seal entry point is needed.
 func runSeal(st *store.Store, yes bool) {
 	if !st.MasterKeySet() {
 		log.Fatalf("未设置 %s：先写入 .env 或导出环境变量（openssl rand -hex 32）\n"+
@@ -169,11 +169,11 @@ func runSeal(st *store.Store, yes bool) {
 	fmt.Printf("⚠ 务必备份 %s：丢失后号池无法解密。\n", store.EnvMasterKey)
 }
 
-// defaultDataPath 返回默认状态文件路径。
+// defaultDataPath returns the default state file path.
 //
-// 优先使用用户私有配置目录（Windows 上是 %AppData%，Unix 上是 ~/.config）：
-// 状态文件含上游 Key 与账号密码，放在可执行文件同目录时往往会落在
-// 共享目录（Program Files、共享盘）里，同机任意用户都能读到。
+// Prefer the user's private config directory (on Windows %AppData%, on Unix ~/.config):
+// The state file contains the upstream Key and account password; when placed in the same directory as the executable, it often ends up in
+// a shared directory (Program Files, shared drive), where any user on the same machine can read it.
 //
-// 为不打断既有部署：如果旧位置（可执行文件同目录）已经有状态文件，继续用它，
-// 否则号池看起来会“凭空消失”。
+// To avoid disrupting existing deployments: if a state file already exists in the old location (the same directory as the executable), continue using it,
+// otherwise the account pool will appear to "vanish into thin air".

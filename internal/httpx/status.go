@@ -9,11 +9,12 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// StatusOf 把一次请求的错误映射成日志里的状态码。
+// StatusOf maps a request error to the status code used in logs.
 //
-// 必须优先采信 HTTPError 里的真实状态：上游的 400（请求体/模型不被接受）、
-// 426（车道）、429（容量）都会被 writeUpstreamErr 原样回给客户端，若这里统一
-// 记成 502，控制台的「状态 ≥ 400」筛选、错误率与归因就全是错的。
+// The real status in HTTPError must take priority: upstream 400 (body/model not
+// accepted), 426 (lane), and 429 (capacity) are returned verbatim to the client by
+// writeUpstreamErr; if they were uniformly logged as 502, the console's "status ≥
+// 400" filter, error rate, and attribution would all be wrong.
 func StatusOf(err error) int {
 	if err == nil {
 		return http.StatusOK
@@ -22,11 +23,12 @@ func StatusOf(err error) int {
 	if errors.As(err, &he) && he.Status >= 400 && he.Status < 600 {
 		return he.Status
 	}
-	// 这两个必须与 writeUpstreamErr 的实际响应一致，否则日志里的状态码会撒谎：
-	//   - 客户端断开：writeUpstreamErr 什么都不写（连接已经没了），日志记 499，
-	//     不计失败（见 store.Record）；
-	//   - 我们自己的超时：响应码是 504，日志却记 502，会让「上游 5xx」与
-	//     「请求超时」混在一起。
+	// These two must match writeUpstreamErr's actual response, otherwise the log
+	// status codes would lie:
+	//   - Client disconnected: writeUpstreamErr writes nothing (the connection is
+	//     already gone); log 499 and do not count it as a failure (see store.Record).
+	//   - Our own timeout: the response code is 504 but the log says 502, mixing
+	//     "upstream 5xx" with "request timeout".
 	if errors.Is(err, context.Canceled) {
 		return store.StatusClientGone
 	}

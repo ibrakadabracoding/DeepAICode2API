@@ -1,4 +1,5 @@
-// probe 是 DeepAICode2API 的诊断工具：验证凭据、模型目录与一次真实推理。
+// probe is a diagnostic tool for DeepAICode2API: it verifies credentials, the model catalog,
+// and one real inference.
 //
 //	go run ./cmd/probe -prompt "hello"
 //	go run ./cmd/probe -key <api-key> -model glm-5.3-flash -stream

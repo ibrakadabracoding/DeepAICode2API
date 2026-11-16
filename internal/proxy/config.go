@@ -7,17 +7,19 @@ import (
 	"deepaicode2api/internal/envfile"
 )
 
-// Config 是代理池的来源配置。
+// Config is the source configuration for the proxy pool.
 type Config struct {
-	// Pool 是直接写在环境变量里的代理列表（PROXY_POOL）。
+	// Pool is the proxy list written directly in the environment variable (PROXY_POOL).
 	Pool string
-	// File 指向代理文件（PROXY_POOL_FILE），Pool 为空时才读取。
+	// File points to the proxy file (PROXY_POOL_FILE), read only when Pool is empty.
 	File string
 }
 
-// LoadConfig 读取代理池配置；真实环境变量优先于 .env。
+// LoadConfig reads the proxy pool configuration; real environment variables take
+// precedence over .env.
 //
-// DEEPAI_REGISTER_PROXY_POOL 是注册链路时期的别名，保留以兼容既有 .env。
+// DEEPAI_REGISTER_PROXY_POOL is an alias from the registration pipeline era, kept for
+// compatibility with existing .env files.
 func LoadConfig() *Config {
 	envfile.Load()
 	return &Config{

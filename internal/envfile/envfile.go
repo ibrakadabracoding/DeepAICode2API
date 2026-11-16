@@ -1,9 +1,11 @@
-// Package envfile 把 .env 注入进程环境，供网关与注册 CLI 共用。
+// Package envfile injects .env into the process environment, shared by the gateway and the
+// register CLI.
 //
-// 为什么必须是独立包：`os.Setenv` 是进程级副作用，只有在读取配置
-// （store.Open 的主密钥、flag 默认值求值）之前调用才有意义。此前这段
-// 逻辑埋在 internal/register 里、由 LoadConfig 惰性触发，导致网关启动时
-// 永远读不到 .env 中的 DEEPAI2API_MASTER_KEY，状态文件只能保持明文。
+// Why it must be a separate package: `os.Setenv` is a process-wide side effect, and it only
+// matters if it runs before configuration is read (store.Open's master key, flag default
+// evaluation). This logic used to be buried in internal/register and lazily triggered by
+// LoadConfig, so the gateway never saw DEEPAI2API_MASTER_KEY from .env at startup and the
+// state file could only remain plaintext.
 package envfile
 
 import (
@@ -14,22 +16,22 @@ import (
 	"sync"
 )
 
-// Load 按优先级加载 .env，仅执行一次。
+// Load loads .env by priority, exactly once.
 //
-// 路径顺序：
-//  1. DEEPAI2API_ENV_FILE 显式指定；
-//  2. 工作目录 .env（源码 / 解压部署）；
-//  3. 可执行文件同目录 .env（分发部署）；
-//  4. 可执行文件父目录 .env（bin/ 下构建的产物）。
+// Path order:
+//  1. DEEPAI2API_ENV_FILE explicitly specified;
+//  2. .env in the working directory (source / unpacked deployment);
+//  3. .env next to the executable (distribution deployment);
+//  4. .env in the executable's parent directory (artifacts built under bin/).
 //
-// 真实环境变量优先：已存在的键不会被覆盖（loadDotEnv 会跳过）。
+// Real environment variables win: existing keys are not overwritten (loadDotEnv skips them).
 func Load() {
 	once.Do(func() { LoadFiles(defaultPaths()...) })
 }
 
 var once sync.Once
 
-// defaultPaths 返回默认的 .env 候选路径（按优先级）。
+// defaultPaths returns the default .env candidate paths in priority order.
 func defaultPaths() []string {
 	var paths []string
 	if p := strings.TrimSpace(os.Getenv("DEEPAI2API_ENV_FILE")); p != "" {
@@ -45,10 +47,11 @@ func defaultPaths() []string {
 	return paths
 }
 
-// LoadFiles 按顺序加载给定 .env 文件，返回实际注入的键数量。
+// LoadFiles loads the given .env files in order and returns the number of keys actually injected.
 //
-// 后加载的文件不会覆盖先前注入的值，真实环境变量也不会被覆盖。
-// 供测试与需要自定义路径的调用方使用；常规路径用 Load。
+// Files loaded later do not overwrite previously injected values, and real environment variables
+// are not overwritten either. For tests and callers that need custom paths; use Load for the
+// usual path.
 func LoadFiles(paths ...string) int {
 	n := 0
 	for _, p := range paths {
@@ -57,10 +60,10 @@ func LoadFiles(paths ...string) int {
 	return n
 }
 
-// loadDotEnv 解析一个 .env 文件并注入环境变量，返回注入的键数量。
+// loadDotEnv parses one .env file and injects its variables, returning the number of keys injected.
 //
-// 支持 `KEY=VALUE`、`export KEY=VALUE`、# 注释与成对引号；
-// 解析失败的行静默跳过（与既往行为一致，避免一个坏行拖垮启动）。
+// Supports `KEY=VALUE`, `export KEY=VALUE`, # comments, and paired quotes; lines that fail to
+// parse are silently skipped (consistent with past behavior, so one bad line cannot break startup).
 func loadDotEnv(path string) int {
 	f, err := os.Open(path)
 	if err != nil {

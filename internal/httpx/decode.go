@@ -7,19 +7,20 @@ import (
 	"net/http"
 )
 
-// MaxRequestBody 限制入站请求体大小（32 MiB）。
+// MaxRequestBody limits the inbound request body size (32 MiB).
 const MaxRequestBody = 32 << 20
 
-// ReadBodyWithLimit 读取入站请求体（上限 32 MiB）。
+// ReadBodyWithLimit reads the inbound request body (capped at 32 MiB).
 func ReadBodyWithLimit(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 }
 
-// DecodeOptionalJSON 解析「可以不带的」JSON 请求体。
+// DecodeOptionalJSON decodes an optional JSON request body.
 //
-// 空体是合法的（典型：刷新全部配额不带任何筛选），但**畸形 JSON 必须报错**：
-// 静默把它当成空请求会让调用方以为参数已生效（历史行为：POST /admin/api/keys
-// 发错字段时建出一把空名字的密钥，仍回 200）。
+// An empty body is valid (typically: refreshing all quotas with no filter), but **malformed JSON
+// must fail**: silently treating it as an empty request lets the caller believe the parameters
+// took effect (historical behavior: POST /admin/api/keys with a misspelled field created a key
+// with an empty name and still returned 200).
 func DecodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(dst)
 	if err == nil || errors.Is(err, io.EOF) {
@@ -29,11 +30,12 @@ func DecodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return false
 }
 
-// DecodeJSONRequest 读取并解析入站 JSON 请求体。
+// DecodeJSONRequest reads and decodes the inbound JSON request body.
 //
-// 三个推理入口（chat / responses / anthropic）此前各写一遍「读体 → 判超限 →
-// 反序列化 → 写错误」，状态码与文案改一处漏两处。协议差异（OpenAI / Anthropic
-// 错误信封）由 fail 回调注入，剩下的只有这一份实现。
+// The three inference entry points (chat / responses / anthropic) each used to reimplement
+// "read body → check limit → unmarshal → write error", so a status-code or message change was
+// made in one place and missed in two. Protocol differences (OpenAI / Anthropic error envelopes)
+// are injected through the fail callback, leaving only this one implementation.
 func DecodeJSONRequest[T any](w http.ResponseWriter, r *http.Request, fail func(code int, msg string)) (T, bool) {
 	var v T
 	raw, err := ReadBodyWithLimit(w, r)

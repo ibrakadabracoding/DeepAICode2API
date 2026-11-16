@@ -10,9 +10,9 @@ import (
 
 // --- Responses → Chat ---
 
-// ResponsesReasoningEffort 提取 Responses 请求里的推理强度。
+// ResponsesReasoningEffort extracts the reasoning effort from a Responses request.
 //
-// 兼容两种写法：官方形状 {"reasoning":{"effort":"low"}}，以及直接给字符串。
+// Accepts two shapes: the official {"reasoning":{"effort":"low"}} and a plain string.
 func ResponsesReasoningEffort(payload map[string]any) string {
 	switch v := payload["reasoning"].(type) {
 	case map[string]any:
@@ -23,7 +23,7 @@ func ResponsesReasoningEffort(payload map[string]any) string {
 	return ""
 }
 
-// ResponsesToChatPayload 把 Responses 请求翻译成 Chat Completions。
+// ResponsesToChatPayload translates a Responses request into Chat Completions.
 func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]any, error) {
 	out := map[string]any{
 		"model":  modelID,
@@ -41,8 +41,8 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 	if v, ok := payload["prompt_cache_key"]; ok {
 		out["prompt_cache_key"] = v
 	}
-	// Responses 的 reasoning.effort 与 chat 的 reasoning_effort 是同一个旋钮。
-	// 不映射就是静默把调用方的推理强度丢掉（上游会按默认值跑）。
+	// Responses' reasoning.effort and chat's reasoning_effort are the same knob.
+	// Not mapping it silently drops the caller's reasoning effort (upstream runs with its default).
 	if effort := ResponsesReasoningEffort(payload); effort != "" {
 		out["reasoning_effort"] = effort
 	}
@@ -81,7 +81,7 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 					"content":      ResponsesToolOutput(item["output"]),
 				})
 			case "reasoning":
-				// 历史推理内容不再回喂上游。
+				// Historical reasoning content is not fed back upstream.
 			}
 		}
 	}
@@ -116,7 +116,7 @@ func ResponsesToChatPayload(payload map[string]any, modelID string) (map[string]
 	return out, nil
 }
 
-// ResponsesInputContent 转换 Responses 的 content 字段。
+// ResponsesInputContent converts the Responses content field.
 func ResponsesInputContent(v any) any {
 	switch c := v.(type) {
 	case string:
@@ -153,12 +153,13 @@ func ResponsesInputContent(v any) any {
 	return ""
 }
 
-// appendResponsesFunctionCall 把 function_call 合并到相邻的 assistant 消息。
+// appendResponsesFunctionCall merges a function_call into the adjacent assistant message.
 //
-// Responses 的并行工具调用是连续多个 function_call item；若每个都单独成一条
-// assistant 消息，就会变成 assistant(call1) → assistant(call2) → tool(call1)，
-// 而 OpenAI 要求 role=tool 的消息紧跟在带 tool_calls 的 assistant 之后。
-// 合并后一条 assistant 带多个 tool_calls，后面的 function_call_output 才能正确对应。
+// Responses emits parallel tool calls as consecutive function_call items; if each became its own
+// assistant message, the result would be assistant(call1) → assistant(call2) → tool(call1), while
+// OpenAI requires role=tool messages to directly follow the assistant with tool_calls. After
+// merging, one assistant carries multiple tool_calls, so the following function_call_output
+// entries map correctly.
 func appendResponsesFunctionCall(messages *[]any, item map[string]any) {
 	call := map[string]any{
 		"id": FirstString(item["call_id"], item["id"]), "type": "function",
@@ -209,7 +210,7 @@ func ConvertResponsesToolChoice(v any) any {
 
 // --- Chat → Responses ---
 
-// ChatToResponsesObject 把 Chat Completions 响应合成为 Responses 对象。
+// ChatToResponsesObject synthesizes a Responses object from a Chat Completions response.
 func ChatToResponsesObject(chat map[string]any, publicModel string) map[string]any {
 	output := make([]any, 0, 3)
 	outputText := ""

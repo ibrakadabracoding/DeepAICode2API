@@ -7,14 +7,16 @@ import (
 	"testing"
 )
 
-// 本文件直接覆盖转换层本体。
+// This file directly covers the conversion layer itself.
 //
-// 这些函数此前只在 internal/server 的端到端用例里被间接执行（单包覆盖率 13%），
-// 某个分支改坏时只有「恰好走到那条分支的集成测试」才会报警。这里按函数补齐：
-// 约定是「非法/缺失输入返回零值或明确错误，绝不 panic」——上游字段类型不稳定，
-// 这一层不能因为一个形状异常就把整个请求打成 500。
+// These functions used to be exercised only indirectly through end-to-end cases in
+// internal/server (single-package coverage was 13%), so a broken branch was caught
+// only by an integration test that happened to take that path. This file fills in
+// per-function coverage: the convention is that invalid/missing input returns a zero
+// value or an explicit error and never panics-upstream field types are unstable, and
+// this layer must not turn one malformed shape into a 500 for the whole request.
 
-// raw 把任意值编成 json.RawMessage，省掉手写转义。
+// raw encodes any value as json.RawMessage, avoiding hand-written escaping.
 func raw(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)
@@ -83,7 +85,7 @@ func TestAnthropicToChatPayload(t *testing.T) {
 	if m0 := msgs[0].(map[string]any); m0["role"] != "system" || m0["content"] != "你是助手" {
 		t.Fatalf("system 消息不对: %#v", m0)
 	}
-	// user 的文本 + 图片合并成同一条多模态消息。
+	// The user's text + image are merged into the same multimodal message.
 	u := msgs[1].(map[string]any)
 	parts, _ := u["content"].([]any)
 	if len(parts) != 2 {
@@ -96,7 +98,7 @@ func TestAnthropicToChatPayload(t *testing.T) {
 	if url := img["image_url"].(map[string]any)["url"]; url != "data:image/jpeg;base64,AAAA" {
 		t.Fatalf("图片 data URL = %v", url)
 	}
-	// assistant 的 tool_use 变成 tool_calls。
+	// The assistant's tool_use becomes tool_calls.
 	a := msgs[2].(map[string]any)
 	calls, _ := a["tool_calls"].([]any)
 	if len(calls) != 1 {
@@ -106,7 +108,7 @@ func TestAnthropicToChatPayload(t *testing.T) {
 	if fn["name"] != "lookup" || fn["arguments"] != `{"q":"x"}` {
 		t.Fatalf("tool_call 参数 = %#v", fn)
 	}
-	// tool_result 变成 role=tool。
+	// tool_result becomes role=tool.
 	tr := msgs[3].(map[string]any)
 	if tr["role"] != "tool" || tr["tool_call_id"] != "tu_1" || tr["content"] != "结果" {
 		t.Fatalf("tool 消息 = %#v", tr)
@@ -224,8 +226,9 @@ func TestAppendAnthropicMessage(t *testing.T) {
 		}
 	})
 
-	// OpenAI 要求 role=tool 紧跟带 tool_calls 的 assistant；Anthropic 常把
-	// tool_result 和后续说明放在同一条 user 消息里，必须先发 tool 再发文本。
+	// OpenAI requires role=tool to immediately follow an assistant with tool_calls;
+	// Anthropic often puts tool_result and follow-up text in the same user message, so
+	// tool must be sent before the text.
 	t.Run("tool_result 先于同条消息的文本", func(t *testing.T) {
 		var msgs []any
 		err := AppendAnthropicMessage(&msgs, AnthropicMessage{Role: "user", Content: raw(t, []any{
@@ -359,7 +362,7 @@ func TestChatToAnthropicMessage(t *testing.T) {
 		t.Fatalf("stop_reason = %v", msg["stop_reason"])
 	}
 	content := msg["content"].([]any)
-	// 顺序：thinking → text → tool_use ×2
+	// Order: thinking → text → tool_use ×2
 	if len(content) != 4 {
 		t.Fatalf("内容块数 = %d: %#v", len(content), content)
 	}
@@ -373,7 +376,7 @@ func TestChatToAnthropicMessage(t *testing.T) {
 	if !equalJSON(tu["input"], map[string]any{"q": "x"}) {
 		t.Fatalf("tool_use input = %#v", tu["input"])
 	}
-	// 非法 JSON 参数必须保留原文，不能静默丢掉。
+	// Invalid JSON arguments must be preserved verbatim, never silently dropped.
 	broken := content[3].(map[string]any)
 	if !equalJSON(broken["input"], map[string]any{"_raw": `{not json`}) {
 		t.Fatalf("非法参数未保留原文: %#v", broken["input"])
@@ -454,7 +457,7 @@ func TestResponsesToChatPayload(t *testing.T) {
 		t.Fatalf("reasoning_effort = %v（应小写化）", out["reasoning_effort"])
 	}
 	msgs := out["messages"].([]any)
-	// instructions → system；input 里的 reasoning 项被丢弃。
+	// instructions → system; reasoning items in input are dropped.
 	if len(msgs) != 4 {
 		t.Fatalf("消息数 = %d: %#v", len(msgs), msgs)
 	}
@@ -479,8 +482,9 @@ func TestResponsesToChatPayload(t *testing.T) {
 	}
 }
 
-// 并行工具调用：连续多个 function_call 必须合并成同一条 assistant 消息，
-// 否则 tool 消息不紧跟带 tool_calls 的 assistant，上游会拒或错配。
+// Parallel tool calls: consecutive function_call entries must be merged into the same
+// assistant message, otherwise the tool messages do not immediately follow the
+// assistant with tool_calls and the upstream rejects or mismatches them.
 func TestResponsesToChatParallelToolCalls(t *testing.T) {
 	out, err := ResponsesToChatPayload(map[string]any{
 		"input": []any{
@@ -618,7 +622,7 @@ func TestChatToResponsesObjectEmpty(t *testing.T) {
 	}
 }
 
-// --- 用量归一 ---
+// --- Usage normalization ---
 
 func TestParseUsage(t *testing.T) {
 	cases := []struct {
@@ -662,8 +666,8 @@ func TestParseUsage(t *testing.T) {
 	}
 }
 
-// 并行工具调用的参数分片可能交错到达：必须按 tool index 归位，
-// 不能把 tool#1 的分片写进 tool#0 的块里（块一旦 close 就不能再追加）。
+// Argument fragments of parallel tool calls may arrive interleaved: they must be placed
+// by tool index, never written into tool#0's block (a block cannot be appended to after close).
 func TestAnthropicBlockWriterInterleavedToolCalls(t *testing.T) {
 	type ev struct {
 		name string
@@ -718,7 +722,7 @@ func TestAnthropicBlockWriterInterleavedToolCalls(t *testing.T) {
 	}
 }
 
-// --- 流式块管理 ---
+// --- Streaming block management ---
 
 func TestAnthropicBlockWriter(t *testing.T) {
 	type ev struct {
@@ -731,13 +735,13 @@ func TestAnthropicBlockWriter(t *testing.T) {
 	})
 
 	b.Thinking("想")
-	b.Thinking("更多") // 同一块内不重复 open
-	b.Text("答")      // 切换块会先 close 上一个
+	b.Thinking("更多") // No repeated open within the same block
+	b.Text("答")      // Switching blocks closes the previous one first
 	b.ToolCall(0, "t1", "lookup", `{"q":1}`)
-	b.ToolCall(0, "t1", "lookup", "") // 同一工具块不重复 open
+	b.ToolCall(0, "t1", "lookup", "") // No repeated open for the same tool block
 	b.ToolCall(1, "t2", "other", `{}`)
 	b.Finish()
-	b.Close() // 幂等：已关闭不再发事件
+	b.Close() // Idempotent: no events once already closed
 
 	var starts, stops, deltas int
 	for _, e := range events {
@@ -750,15 +754,15 @@ func TestAnthropicBlockWriter(t *testing.T) {
 			deltas++
 		}
 	}
-	// thinking / text / tool / tool = 4 块
+	// thinking / text / tool / tool = 4 blocks
 	if starts != 4 || stops != 4 {
 		t.Fatalf("块数 start=%d stop=%d，期望 4/4：%#v", starts, stops, events)
 	}
-	// thinking 2 次 delta + text 1 + tool json 2 = 5
+	// 2 thinking deltas + 1 text + 2 tool json = 5
 	if deltas != 5 {
 		t.Fatalf("delta 数 = %d，期望 5", deltas)
 	}
-	// index 必须递增且与 stop 对得上。
+	// index must be increasing and match the stop events.
 	last := -1
 	for _, e := range events {
 		if e.name != "content_block_start" {
@@ -772,10 +776,11 @@ func TestAnthropicBlockWriter(t *testing.T) {
 	}
 }
 
-// TestAnthropicBlockWriterCloseKeepsToolsBuffered 守住「出错路径不 flush 工具」。
+// TestAnthropicBlockWriterCloseKeepsToolsBuffered guards "the error path does not flush tools".
 //
-// 流式过程中出错时参数 JSON 可能只到了一半；若把缓冲的工具块当完整块发出，
-// 客户端会拿到无法解析的 input。Close 只关闭已打开的块，Finish 才 flush。
+// When an error occurs mid-stream the argument JSON may be only partially received; if the
+// buffered tool block were emitted as a complete block, the client would get unparseable
+// input. Close only closes already-open blocks; Finish is what flushes.
 func TestAnthropicBlockWriterCloseKeepsToolsBuffered(t *testing.T) {
 	var events []string
 	b := NewAnthropicBlockWriter(func(name string, _ any) { events = append(events, name) })

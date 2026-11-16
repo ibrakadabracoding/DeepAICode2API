@@ -5,15 +5,16 @@ import (
 	"strings"
 )
 
-// --- Anthropic 流式内容块管理器 ---
+// --- Anthropic streaming content block manager ---
 
-// anthropicToolBlock 是缓冲中的工具调用。
+// anthropicToolBlock is a buffered tool call.
 //
-// OpenAI 的流式 tool_calls 以 index 区分，多个工具调用的参数分片**可能交错**
-// 到达（尤其是并行工具调用）。Anthropic 的 content_block 语义是顺序块：
-// 一个块 close 之后就不能再往里追加。因此这里先按 index 把参数攒齐，
-// 在 Finish / 下一次文本块之前按 index 顺序一次性发出，避免把 tool#1 的
-// 参数分片写进 tool#0 的块里。
+// OpenAI streaming tool_calls are distinguished by index, and argument fragments
+// of multiple tool calls **may arrive interleaved** (especially for parallel tool
+// calls). Anthropic content_block semantics are sequential: once a block is
+// closed, nothing more can be appended to it. So arguments are accumulated by
+// index here and emitted in index order in one go at Finish / before the next
+// text block, avoiding writing tool#1's argument fragments into tool#0's block.
 type anthropicToolBlock struct {
 	toolIdx int
 	id      string
@@ -74,7 +75,7 @@ func (b *AnthropicBlockWriter) Text(text string) {
 	})
 }
 
-// ToolCall 缓冲一个工具调用分片；真正的内容块在 Finish 时按 index 顺序发出。
+// ToolCall buffers a tool call fragment; the actual content blocks are emitted in index order at Finish.
 func (b *AnthropicBlockWriter) ToolCall(toolIdx int, id, name, args string) {
 	if b.tools == nil {
 		b.tools = map[int]*anthropicToolBlock{}
@@ -93,18 +94,18 @@ func (b *AnthropicBlockWriter) ToolCall(toolIdx int, id, name, args string) {
 	t.args.WriteString(args)
 }
 
-// Finish 结束响应：关闭当前块，把缓冲的工具调用按 index 顺序发出，再关闭最后一个。
+// Finish ends the response: close the current block, emit the buffered tool calls in index order, then close the last one.
 func (b *AnthropicBlockWriter) Finish() {
 	b.Close()
 	b.flushTools()
 	b.Close()
 }
 
-// flushTools 按 tool index 升序发出工具块。
+// flushTools emits tool blocks in ascending tool index order.
 //
-// 每个工具的参数作为**单个** input_json_delta 发出：上游分片已经攒齐，
-// 再拆成多个 delta 只会增加客户端解析负担，而且无法保证与 OpenAI 的
-// 分片边界一致。
+// Each tool's arguments are emitted as a **single** input_json_delta: the upstream
+// fragments are already accumulated, and splitting them into multiple deltas only
+// adds client parsing overhead while failing to match OpenAI's fragment boundaries.
 func (b *AnthropicBlockWriter) flushTools() {
 	if len(b.tools) == 0 {
 		return

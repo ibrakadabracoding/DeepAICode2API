@@ -10,7 +10,7 @@ import (
 
 // --- Anthropic → OpenAI ---
 
-// AnthropicToChatPayload 把 Anthropic 请求转换为 OpenAI Chat Completions。
+// AnthropicToChatPayload converts an Anthropic request into OpenAI Chat Completions.
 func AnthropicToChatPayload(req *AnthropicRequest, modelID string) (map[string]any, error) {
 	payload := map[string]any{
 		"model":  modelID,
@@ -70,18 +70,22 @@ func AnthropicToChatPayload(req *AnthropicRequest, modelID string) (map[string]a
 	return payload, nil
 }
 
-// AnthropicEffort 把 Anthropic 的 thinking / output_config.effort 映射为
-// 上游 chat 端点的 reasoning_effort。
+// AnthropicEffort maps Anthropic's thinking / output_config.effort to the
+// reasoning_effort of the upstream chat endpoint.
 //
-// 上游只认 OpenAI 形状；此处前 thinking 被解析后直接丢弃，结果就是
-// Anthropic 客户端（包括模型指纹类检测）显式要求的推理强度被静默降级成
-// 上游默认值——测出来的“模型指纹”自然与客户端不一致。
+// The upstream only understands the OpenAI shape; previously, thinking was parsed
+// and then dropped, which silently downgraded the reasoning effort explicitly
+// requested by Anthropic clients (including model fingerprint checks) to the
+// upstream default - so the measured "model fingerprint" naturally disagreed with
+// the client.
 //
-// 优先级：output_config.effort > thinking.type > thinking.budget_tokens。
-// output_config.effort 原样透传（含 `xhigh` / `max`）；budget_tokens 没有标准
-// 换算，这里按量级粗分：4k 以下 low、16k 以下 medium、32k 以下 high、
-// 64k 以下 xhigh、再高 max。2026-11-15 实测上游对这三个免费模型接受全部
-// 六档（none/low/medium/high/xhigh/max），不会因映射到新档而 400。
+// Priority: output_config.effort > thinking.type > thinking.budget_tokens.
+// output_config.effort is passed through as-is (including `xhigh` / `max`);
+// budget_tokens has no standard conversion, so it is roughly bucketed by
+// magnitude: below 4k low, below 16k medium, below 32k high, below 64k xhigh,
+// anything higher max. Measured on 2026-11-15: the upstream accepts all six
+// levels (none/low/medium/high/xhigh/max) for these three free models, so mapping
+// to a new level does not cause a 400.
 func AnthropicEffort(req *AnthropicRequest) string {
 	if req == nil {
 		return ""
@@ -107,7 +111,7 @@ func AnthropicEffort(req *AnthropicRequest) string {
 	case "enabled":
 		switch {
 		case th.BudgetTokens <= 0:
-			return "" // 只说了“开”，没给预算：交给上游默认
+			return "" // Only "enabled" was given, no budget: leave it to the upstream default
 		case th.BudgetTokens < 4096:
 			return "low"
 		case th.BudgetTokens < 16384:
@@ -123,14 +127,14 @@ func AnthropicEffort(req *AnthropicRequest) string {
 	return ""
 }
 
-// AppendAnthropicMessage 把一个 Anthropic 消息展开为一条或多条 OpenAI 消息。
+// AppendAnthropicMessage expands one Anthropic message into one or more OpenAI messages.
 func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 	role := strings.ToLower(strings.TrimSpace(m.Role))
 	if role == "" {
 		role = "user"
 	}
 
-	// content 为字符串时直接透传。
+	// Pass through directly when content is a string.
 	var text string
 	if json.Unmarshal(m.Content, &text) == nil {
 		if role == "assistant" {
@@ -184,12 +188,14 @@ func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 		return nil
 	}
 
-	// user：tool_result 单独成为 role=tool 消息，其余文本 / 图片合并为一条消息。
+	// user: tool_result becomes a separate role=tool message; the remaining text / images
+	// are merged into one message.
 	//
-	// **tool_result 必须先发**：OpenAI 要求 role=tool 紧跟在带 tool_calls 的
-	// assistant 之后，而 Anthropic 常把 tool_result 与后续说明放在同一条 user
-	// 消息里。按原顺序先发文本会插在 assistant 与 tool 之间，上游会直接拒绝
-	// 或把工具结果当成新的用户轮次。
+	// **tool_result must be sent first**: OpenAI requires role=tool to immediately follow
+	// an assistant with tool_calls, while Anthropic often puts tool_result and follow-up
+	// explanations in the same user message. Sending text first in the original order
+	// would insert it between the assistant and tool messages, and the upstream would
+	// reject it outright or treat the tool result as a new user turn.
 	for _, b := range blocks {
 		if b["type"] != "tool_result" {
 			continue
@@ -237,7 +243,7 @@ func AppendAnthropicMessage(messages *[]any, m AnthropicMessage) error {
 	return nil
 }
 
-// AnthropicSystemText 提取 system 字段（字符串或文本块数组）。
+// AnthropicSystemText extracts the system field (a string or an array of text blocks).
 func AnthropicSystemText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -354,7 +360,7 @@ func AnthropicToolChoice(raw json.RawMessage) any {
 
 // --- OpenAI → Anthropic ---
 
-// ChatToAnthropicMessage 把 OpenAI chat 响应转换为 Anthropic message。
+// ChatToAnthropicMessage converts an OpenAI chat response into an Anthropic message.
 func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]any {
 	content := make([]any, 0, 3)
 	stopReason := "end_turn"
@@ -422,7 +428,7 @@ func ChatToAnthropicMessage(out map[string]any, publicModel string) map[string]a
 	}
 }
 
-// AnthropicStopReason 映射 OpenAI finish_reason → Anthropic stop_reason。
+// AnthropicStopReason maps OpenAI finish_reason → Anthropic stop_reason.
 func AnthropicStopReason(fr string) string {
 	switch fr {
 	case "tool_calls", "function_call":

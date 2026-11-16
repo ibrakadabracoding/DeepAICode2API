@@ -11,7 +11,7 @@ func acct(id, group string) *deepai.Account {
 	return &deepai.Account{ID: id, Name: id, APIKey: "sk-" + id, Group: group, Enabled: true}
 }
 
-// 三个健康账号应被均分。
+// Three healthy accounts should be split evenly.
 func TestPickRoundRobins(t *testing.T) {
 	s := New()
 	accounts := []*deepai.Account{acct("a", ""), acct("b", ""), acct("c", "")}
@@ -47,7 +47,7 @@ func TestPickSkipsDisabledAndFailed(t *testing.T) {
 	}
 }
 
-// 全组都失败时不能返回 nil：宁可把请求打出去，也不要硬阻塞。
+// When the whole group has failed, do not return nil: better to send the request out than to block hard.
 func TestPickFallsBackWhenAllFailed(t *testing.T) {
 	s := New()
 	a, b := acct("a", ""), acct("b", "")
@@ -70,13 +70,13 @@ func TestPickRespectsGroup(t *testing.T) {
 	if got := s.Pick(accounts, "nope"); got != nil {
 		t.Fatalf("不存在的分组应返回 nil，实际 %v", got)
 	}
-	// 空分组 = 全部分组。
+	// Empty group = all groups.
 	if got := s.Pick(accounts, ""); got == nil {
 		t.Fatal("空分组应覆盖全部账号")
 	}
 }
 
-// 有额度的账号优先：避免每次都先被上游拒一次再换号。
+// Prefer accounts with quota: avoid being rejected by the upstream once before switching every time.
 func TestPickPrefersQuota(t *testing.T) {
 	s := New()
 	now := time.Now().Unix()
@@ -91,7 +91,7 @@ func TestPickPrefersQuota(t *testing.T) {
 	}
 }
 
-// 0 额度只在「刚探过」时才算耗尽。
+// Zero quota counts as exhausted only when it was probed recently.
 func TestHasQuota(t *testing.T) {
 	now := time.Now().Unix()
 	cases := []struct {
@@ -125,7 +125,7 @@ func TestPickEmpty(t *testing.T) {
 	}
 }
 
-// 被上游策略拦截（social_login_required）的账号不应再被调度。
+// Accounts blocked by the upstream policy (social_login_required) must not be scheduled again.
 func TestPickSkipsBlocked(t *testing.T) {
 	s := New()
 	blocked, good := acct("blocked", ""), acct("good", "")
@@ -142,8 +142,9 @@ func TestPickSkipsBlocked(t *testing.T) {
 	}
 }
 
-// TestPickSkipsQuotaExhausted 固化「当日额度用完」的调度跳过：
-// QuotaUntil 之前不可选（否则每个请求都白撞 403），到点自动恢复。
+// TestPickSkipsQuotaExhausted fixes the scheduling skip for "daily quota used up":
+// not selectable before QuotaUntil (otherwise every request wastefully hits 403),
+// and automatically restored when the time arrives.
 func TestPickSkipsQuotaExhausted(t *testing.T) {
 	now := time.Now().Unix()
 	accts := []*deepai.Account{
@@ -158,7 +159,7 @@ func TestPickSkipsQuotaExhausted(t *testing.T) {
 		}
 	}
 
-	// 过期后恢复可选。
+	// Selectable again after expiry.
 	accts[0].QuotaUntil = now - 1
 	seen := map[string]bool{}
 	for i := 0; i < 8; i++ {

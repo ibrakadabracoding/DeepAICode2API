@@ -1,13 +1,16 @@
-// Package logx 把网关日志统一成「一行一条 JSON」。
+// Package logx normalizes gateway logs into "one JSON object per line".
 //
-// 背景：排障时真正需要的是可 grep / 可 jq 的字段（request_id / account /
-// model / latency），而 `log.Printf` 的自由文本只能靠正则。这里做两件事：
+// Background: when troubleshooting, what actually helps are grep-able / jq-able fields
+// (request_id / account / model / latency), while free text from `log.Printf` can only be
+// matched with regexes. This package does two things:
 //
-//  1. Setup 把标准库 log 的输出接管成 JSON 行——既有 50 余处 log.Printf
-//     一行不改就变成结构化日志（msg 字段保留原文），不必逐处重写；
-//  2. Info/Warn/Error 供新增代码直接写带字段的记录。
+//  1. Setup takes over the standard library log output and turns it into JSON lines-the 50-odd
+//     existing log.Printf calls become structured logs without changing a line (the msg field
+//     keeps the original text), so there is no need to rewrite each call site;
+//  2. Info/Warn/Error let new code write records with fields directly.
 //
-// 刻意不引入第三方日志库：stdlib 的 log/slog 已经够用，也符合「零依赖」目标。
+// Deliberately no third-party logging library: stdlib log/slog is sufficient and matches the
+// "zero dependencies" goal.
 package logx
 
 import (
@@ -24,9 +27,9 @@ var (
 	logger *slog.Logger
 )
 
-// Setup 初始化全局日志：JSON 输出到 w（传 nil 用 stderr）。
+// Setup initializes global logging: JSON output goes to w (pass nil to use stderr).
 //
-// 必须在任何日志输出之前调用一次（main 的第一行）。
+// Must be called once before any log output (the first line of main).
 func Setup(w io.Writer) {
 	if w == nil {
 		w = os.Stderr
@@ -40,7 +43,7 @@ func Setup(w io.Writer) {
 	log.SetOutput(&lineWriter{logger: l, fallback: w})
 }
 
-// get 返回已配置的 logger；未调用 Setup 时回落到默认 logger。
+// get returns the configured logger; falls back to the default logger when Setup has not been called.
 func get() *slog.Logger {
 	mu.RLock()
 	l := logger
@@ -51,15 +54,16 @@ func get() *slog.Logger {
 	return slog.Default()
 }
 
-// Info / Warn / Error 写一条带字段的结构化日志。
+// Info / Warn / Error write one structured log record with fields.
 func Info(msg string, args ...any)  { get().Info(msg, args...) }
 func Warn(msg string, args ...any)  { get().Warn(msg, args...) }
 func Error(msg string, args ...any) { get().Error(msg, args...) }
 
-// lineWriter 把标准库 log 的每一行包装成一条 JSON 记录。
+// lineWriter wraps each line from the standard library log into one JSON record.
 //
-// log 包可能在一条 Write 里带多行（不会发生在当前代码里，但保持健壮），
-// 这里按行拆分逐条输出，避免把多行塞进一个 msg 破坏 JSONL 结构。
+// The log package may deliver multiple lines in a single Write (does not happen in the current
+// code, but keep it robust); this splits by line and emits each separately, so multiple lines do
+// not end up in one msg and break the JSONL structure.
 type lineWriter struct {
 	logger   *slog.Logger
 	fallback io.Writer
@@ -77,7 +81,7 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 		if line == "" {
 			continue
 		}
-		// slog 的 JSON handler 自带 time/level/msg 字段，这里只补原文。
+		// slog's JSON handler already provides time/level/msg fields; this only adds the original text.
 		w.logger.Info(line)
 	}
 	return len(p), nil

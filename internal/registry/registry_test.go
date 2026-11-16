@@ -19,7 +19,7 @@ func TestResolveExact(t *testing.T) {
 	if got.ID != "gpt-6-luna" {
 		t.Fatalf("精确匹配失败: %q", got.ID)
 	}
-	// 大小写不敏感。
+	// Case-insensitive.
 	if got := Resolve(catalog(), nil, "GPT-6-LUNA", ""); got.ID != "gpt-6-luna" {
 		t.Fatalf("应大小写不敏感: %q", got.ID)
 	}
@@ -44,7 +44,7 @@ func TestResolveCustomAlias(t *testing.T) {
 }
 
 func TestResolveBuiltinAlias(t *testing.T) {
-	// Claude Code / Cline / OpenAI SDK 常见模型名都应落在默认免费模型上。
+	// Common model names from Claude Code / Cline / OpenAI SDK should all resolve to the default free model.
 	for _, name := range []string{"gpt-4o", "claude-3-5-sonnet", "deepseek-chat", "default", "deepai"} {
 		got := Resolve(catalog(), nil, name, "")
 		if got.ID != deepai.DefaultModel {
@@ -54,11 +54,11 @@ func TestResolveBuiltinAlias(t *testing.T) {
 }
 
 func TestResolveLooseMatch(t *testing.T) {
-	// 目录里没有 "opus"，但 ID 包含它。
+	// There is no "opus" in the catalog, but the ID contains it.
 	if got := Resolve(catalog(), nil, "opus", ""); got.ID != "claude-opus-5-5" {
 		t.Fatalf("包含匹配失败: %q", got.ID)
 	}
-	// 名称（空格转连字符）匹配。
+	// Match by name (spaces converted to hyphens).
 	if got := Resolve(catalog(), nil, "gpt-6-luna", ""); got.ID != "gpt-6-luna" {
 		t.Fatalf("匹配失败: %q", got.ID)
 	}
@@ -81,7 +81,7 @@ func TestResolveFallbackToDefaultThenFirst(t *testing.T) {
 }
 
 func TestResolveAlwaysReturnsSomething(t *testing.T) {
-	// 目录为空也必须返回一个可用条目，否则下游会拿到空 ID。
+	// Even an empty catalog must return a usable entry, otherwise downstream will get an empty ID.
 	got := Resolve(nil, nil, "anything", "")
 	if got.ID == "" {
 		t.Fatal("空目录时应返回兜底模型，而不是空 ID")
@@ -111,7 +111,7 @@ func TestListIncludesAliases(t *testing.T) {
 		t.Fatalf("缺少别名条目: %#v", list)
 	}
 
-	// 原目录不能被修改。
+	// The original catalog must not be modified.
 	if catalog()[0].ID != "glm-5.3-flash" {
 		t.Fatal("List 不应修改入参")
 	}
@@ -126,19 +126,19 @@ func TestFind(t *testing.T) {
 	}
 }
 
-// 严格模式：不回落、不做子串匹配，但保留别名与「模型名称」这类明确意图。
+// Strict mode: no fallback, no substring matching, but aliases and explicit intents such as "model name" are preserved.
 func TestResolveStrictNoImplicitFallback(t *testing.T) {
 	for _, name := range []string{"gpt-6-sol", "gpt-5.6-sol", "mimo-v2.6-flash", "nope"} {
 		if m, ok := ResolveStrict(catalog(), nil, name, "glm-5.3-flash"); ok {
 			t.Errorf("%q 不应解析成功，实际 %q", name, m.ID)
 		}
-		// 宽松模式保持原行为（回落），保证开箱即用。
+		// Lenient mode keeps the original behavior (fallback) to ensure it works out of the box.
 		if got := Resolve(catalog(), nil, name, "glm-5.3-flash"); got.ID != "glm-5.3-flash" {
 			t.Errorf("%q 宽松模式应回落默认模型，实际 %q", name, got.ID)
 		}
 	}
 
-	// 子串匹配不算「有依据」：gpt-6 不能静默变成目录里第一个 gpt-6-*。
+	// Substring matching does not count as "justified": gpt-6 must not silently become the first gpt-6-* in the catalog.
 	if _, ok := ResolveStrict(catalog(), nil, "gpt-6", "glm-5.3-flash"); ok {
 		t.Error("严格模式不应做子串匹配")
 	}
@@ -146,11 +146,11 @@ func TestResolveStrictNoImplicitFallback(t *testing.T) {
 		t.Error("严格模式不应把 opus 子串命中 claude-opus-5-5")
 	}
 
-	// 模型名称（含空格）是明确意图。
+	// A model name (with spaces) is an explicit intent.
 	if m, ok := ResolveStrict(catalog(), nil, "  Claude Opus 5.5 ", ""); !ok || m.ID != "claude-opus-5-5" {
 		t.Errorf("名称匹配失败: %#v %v", m, ok)
 	}
-	// 别名仍然生效。
+	// Aliases still take effect.
 	if m, ok := ResolveStrict(catalog(), map[string]string{"mine": "gpt-6-luna"}, "mine", ""); !ok || m.ID != "gpt-6-luna" {
 		t.Errorf("自定义别名失败: %#v %v", m, ok)
 	}

@@ -5,12 +5,14 @@ import (
 	"testing"
 )
 
-// 本文件补的是「转换层的边角分支」：平时都靠 internal/server 的端到端用例
-// 间接覆盖，一旦某个 helper 只在一种形状下被测到，改坏另一条分支不会有任何
-// 用例报警（`go tool cover` 显示这些函数 0%~30% 覆盖）。
+// This file covers the corner branches of the translation layer: normally they are only
+// indirectly exercised by end-to-end cases in internal/server, so when a helper is tested with
+// just one shape, breaking the other branch raises no test failure (`go tool cover` shows these
+// functions at 0%~30% coverage).
 //
-// 约定：全部走表驱动 + 明确的「非法输入返回零值」断言，因为上游字段类型
-// 不稳定，这一层的契约就是「拿不到就当零值，绝不 panic」。
+// Convention: everything is table-driven with explicit "invalid input returns zero value"
+// assertions, because upstream field types are unstable; the contract of this layer is "treat
+// missing as zero, never panic".
 
 func TestConvertResponsesToolChoice(t *testing.T) {
 	cases := []struct {
@@ -158,8 +160,8 @@ func TestNumericCoercion(t *testing.T) {
 		t.Fatalf("FloatOf(string) 应为 0，得到 %v", got)
 	}
 
-	// LenOfString 按 rune 计数：中文与 emoji 都不能按字节算，
-	// 否则 usage 里的 input_tokens 会和上游对不上。
+	// LenOfString counts runes: CJK text and emoji must not be counted by bytes, or
+	// input_tokens in usage would not match upstream.
 	if got := LenOfString("中文"); got != 2 {
 		t.Fatalf("LenOfString(中文) = %d，期望 2", got)
 	}
@@ -178,7 +180,7 @@ func TestNumericCoercion(t *testing.T) {
 	}
 }
 
-// equalJSON 用 JSON 往返比较，避免 map 比较时 key 顺序带来的噪音。
+// equalJSON compares via a JSON round trip, avoiding noise from key order when comparing maps.
 func equalJSON(a, b any) bool {
 	ja, errA := json.Marshal(a)
 	jb, errB := json.Marshal(b)

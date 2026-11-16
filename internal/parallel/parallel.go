@@ -1,9 +1,11 @@
-// Package parallel 提供有界并发的批量执行。
+// Package parallel provides bounded-concurrency batch execution.
 //
-// 网关里有 6 处「固定并发跑一批任务」的逻辑：批量注册、台账补跑、
-// 配额探测、控制台巡检、代理连通性检查、邮箱重新验证。它们各自手写
-// jobs channel + WaitGroup，取消语义与结果收集方式还各不相同。
-// 统一到 For 之后，并发上限、ctx 取消、结果按下标回填只有一处实现。
+// The gateway has 6 places that "run a batch of tasks with fixed concurrency":
+// bulk registration, ledger catch-up, quota probing, console health checks, proxy
+// connectivity checks, and email re-verification. Each hand-rolled a jobs channel +
+// WaitGroup, and their cancellation semantics and result collection differed. After
+// unifying on For, the concurrency limit, ctx cancellation, and writing results back
+// by index are implemented in exactly one place.
 package parallel
 
 import (
@@ -11,13 +13,13 @@ import (
 	"sync"
 )
 
-// For 以最多 workers 个并发执行 fn(0)…fn(count-1)。
+// For runs fn(0)...fn(count-1) with at most workers concurrent executions.
 //
-// 语义：
-//   - workers<=0 视为 1；workers>count 会被收敛到 count；
-//   - ctx 取消后不再派发新任务，已开始的任务会跑完；
-//   - For 返回时所有已派发的任务都已结束，调用方可安全读取结果切片；
-//   - fn 的写入必须落在各自下标上（或使用独立同步），避免结果竞争。
+// Semantics:
+//   - workers<=0 is treated as 1; workers>count is clamped to count;
+//   - after ctx is canceled no new tasks are dispatched, but started tasks run to completion;
+//   - when For returns, all dispatched tasks have finished, so the caller may safely read result slices;
+//   - fn's writes must target their own index (or use separate synchronization) to avoid result races.
 func For(ctx context.Context, workers, count int, fn func(ctx context.Context, i int)) {
 	if count <= 0 || fn == nil {
 		return
@@ -28,10 +30,11 @@ func For(ctx context.Context, workers, count int, fn func(ctx context.Context, i
 	if workers > count {
 		workers = count
 	}
-	// 已取消时一个都不派发。
+	// Dispatch nothing when already canceled.
 	//
-	// 只靠派发循环里的 select 不够：ctx.Done() 与 jobs<-i 可能同时就绪，
-	// Go 会等概率二选一，于是“已取消的 ctx”仍会跑掉部分任务。
+	// Relying only on the select in the dispatch loop is insufficient: ctx.Done()
+	// and jobs<-i may both be ready, and Go picks one at random, so a canceled ctx
+	// would still run some tasks.
 	if ctx.Err() != nil {
 		return
 	}

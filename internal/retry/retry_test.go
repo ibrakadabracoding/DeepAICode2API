@@ -39,7 +39,7 @@ func TestDoRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-// 不可重试的错误必须立刻返回，不能白等退避。
+// A non-retryable error must be returned immediately, without waiting out the backoff.
 func TestDoStopsOnNonRetryable(t *testing.T) {
 	calls := 0
 	start := time.Now()
@@ -59,7 +59,7 @@ func TestDoStopsOnNonRetryable(t *testing.T) {
 	}
 }
 
-// 退避用尽后返回最后一次错误。
+// After backoff is exhausted, return the last error.
 func TestDoReturnsLastErrorAfterExhausted(t *testing.T) {
 	calls := 0
 	err := Do(t.Context(), []time.Duration{0, 0}, alwaysRetryable, func(context.Context) error {
@@ -74,10 +74,11 @@ func TestDoReturnsLastErrorAfterExhausted(t *testing.T) {
 	}
 }
 
-// ctx 已取消时不得再发起新尝试，并返回已有错误。
+// When ctx is already canceled, no new attempts may be started, and the existing error is returned.
 //
-// 用 1 小时的退避而不是 sleep 竞态：ctx 先行取消后，首次尝试仍会执行，
-// 随后的退避必然被 ctx 打断，结果是确定性的。
+// Use a 1-hour backoff rather than a sleep race: after ctx is canceled first, the
+// first attempt still runs, and the following backoff is necessarily interrupted by
+// ctx, making the result deterministic.
 func TestDoAbortsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -95,7 +96,7 @@ func TestDoAbortsOnContextCancel(t *testing.T) {
 	}
 }
 
-// delays 为空表示只尝试一次。
+// Empty delays means only one attempt.
 func TestDoSingleAttemptWithoutDelays(t *testing.T) {
 	calls := 0
 	err := Do(t.Context(), nil, alwaysRetryable, func(context.Context) error {

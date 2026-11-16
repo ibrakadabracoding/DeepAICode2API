@@ -7,22 +7,24 @@ import (
 	"strings"
 )
 
-// --- 响应压缩 ---
+// --- Response compression ---
 //
-// 控制台的 /admin/api/accounts 一页默认 50 个账号（约 20~40KB JSON），
-// /admin/api/overview 带着模型目录也有十几 KB；局域网 / 远程部署时这些
-// 都是纯文本，gzip 通常能压到 1/5~1/10。内嵌的 JS / CSS 同理。
+// The console's /admin/api/accounts page returns 50 accounts by default (about
+// 20-40KB of JSON), and /admin/api/overview with its model catalog is also over
+// ten KB; for LAN / remote deployments these are all plain text, and gzip usually
+// compresses them to 1/5-1/10. The same applies to the embedded JS / CSS.
 //
-// 只压「明确可压」的类型，并且**跳过 SSE**：流式响应压缩后必须逐帧 flush，
-// 很多客户端不认，收益也接近于零。
+// Only explicitly compressible types are compressed, and **SSE is skipped**:
+// compressed streaming responses must flush frame by frame, which many clients do
+// not support, and the benefit is close to zero.
 
-// compressibleType 判断响应该不该压缩。
+// compressibleType reports whether a response should be compressed.
 func compressibleType(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	if ct == "" {
 		return false
 	}
-	// SSE 必须跳过：逐帧 flush + gzip 会让客户端拿不到增量。
+	// SSE must be skipped: frame-by-frame flush + gzip prevents clients from receiving increments.
 	if strings.HasPrefix(ct, "text/event-stream") {
 		return false
 	}
@@ -37,10 +39,11 @@ func compressibleType(ct string) bool {
 	return false
 }
 
-// gzipWriter 按 Content-Type 决定是否真的压缩。
+// gzipWriter decides whether to actually compress based on Content-Type.
 //
-// 之所以延迟到 WriteHeader 才决定：handler 通常先 Set("Content-Type") 再
-// WriteHeader，此时类型已知；提前决定就得让每个 handler 自己声明。
+// The decision is deferred until WriteHeader because handlers usually call
+// Set("Content-Type") before WriteHeader, so the type is known by then; deciding
+// earlier would force every handler to declare it itself.
 type gzipWriter struct {
 	http.ResponseWriter
 	gz        *gzip.Writer
@@ -55,7 +58,7 @@ func (w *gzipWriter) decide() {
 	}
 	w.decided = true
 	ct := w.Header().Get("Content-Type")
-	// 已有 Content-Encoding（例如上游透传）就不再套一层。
+	// If Content-Encoding is already set (e.g. passed through from upstream), do not wrap it again.
 	if w.Header().Get("Content-Encoding") != "" || !compressibleType(ct) {
 		return
 	}
@@ -71,8 +74,9 @@ func (w *gzipWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHead = true
-	// 1xx / 204 / 304 没有响应体：套上 Content-Encoding 会让代理与客户端
-	// 把一个空体当成压缩流（304 撞 ETag 时最容易命中）。
+	// 1xx / 204 / 304 have no response body: adding Content-Encoding would make
+	// proxies and clients treat an empty body as a compressed stream (most likely
+	// on a 304 ETag hit).
 	if code >= 200 && code != http.StatusNoContent && code != http.StatusNotModified {
 		w.decide()
 	} else {
@@ -91,7 +95,7 @@ func (w *gzipWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
-// Flush 在压缩模式下先 flush gzip（否则压缩缓冲会让增量卡住）。
+// Flush flushes gzip first in compression mode (otherwise the compression buffer stalls increments).
 func (w *gzipWriter) Flush() {
 	if w.compress {
 		_ = w.gz.Flush()
@@ -103,14 +107,14 @@ func (w *gzipWriter) Flush() {
 
 func (w *gzipWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// close 结束压缩流；只在真的压缩过时才有意义。
+// close ends the compression stream; it only matters when compression actually happened.
 func (w *gzipWriter) close() {
 	if w.compress && w.gz != nil {
 		_ = w.gz.Close()
 	}
 }
 
-// WithGzip 对声明支持 gzip 的客户端压缩文本响应。
+// WithGzip compresses text responses for clients that declare gzip support.
 func WithGzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !AcceptsGzip(r) {
@@ -123,10 +127,10 @@ func WithGzip(next http.Handler) http.Handler {
 	})
 }
 
-// AcceptsGzip 判断客户端是否接受 gzip（支持 q 权重，q=0 表示拒绝）。
+// AcceptsGzip reports whether the client accepts gzip (supports q weights; q=0 means reject).
 //
-// 不能简单地判断 `strings.Contains(params, "q=0")`：那会把 q=0.5（接受）
-// 也当成拒绝。这里按 "q=" 后面的数字取值比较。
+// A naive `strings.Contains(params, "q=0")` check would treat q=0.5 (accepted) as a
+// rejection. This parses the number after "q=" and compares it.
 func AcceptsGzip(r *http.Request) bool {
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
 		enc, params, _ := strings.Cut(strings.TrimSpace(part), ";")
@@ -138,7 +142,7 @@ func AcceptsGzip(r *http.Request) bool {
 	return false
 }
 
-// encodingWeight 从 ";q=0.5" 这类参数里取权重，缺省为 1。
+// encodingWeight extracts the weight from parameters like ";q=0.5"; defaults to 1.
 func encodingWeight(params string) float64 {
 	for _, p := range strings.Split(params, ";") {
 		k, v, ok := strings.Cut(strings.TrimSpace(p), "=")

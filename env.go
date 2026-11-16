@@ -8,8 +8,9 @@ import (
 	"strings"
 )
 
-// 启动参数与环境变量解析。
-// 抽出来的目的：main() 只负责装配，环境读取的默认值集中在一处便于对照 README §五。
+// Startup flag and environment variable parsing.
+// Extracted so main() only handles assembly, and environment defaults live in one place that is
+// easy to cross-check against README §5.
 
 func defaultDataPath() string {
 	const name = "deepaicode2api-data.json"
@@ -53,9 +54,10 @@ func envBool(key string, def bool) bool {
 	return def
 }
 
-// isLoopbackListen 判断监听地址是否只接受本机连接。
+// isLoopbackListen reports whether the listen address accepts only local connections.
 //
-// 空串 / 0.0.0.0 / :: 都表示监听全部网卡，属于对外暴露，不算回环。
+// An empty string / 0.0.0.0 / :: all mean listening on every interface, which is external
+// exposure and does not count as loopback.
 func isLoopbackListen(host string) bool {
 	host = strings.TrimSpace(host)
 	switch strings.ToLower(host) {

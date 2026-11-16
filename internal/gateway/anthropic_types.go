@@ -17,7 +17,7 @@ type AnthropicRequest struct {
 	Tools         []AnthropicTool    `json:"tools"`
 	ToolChoice    json.RawMessage    `json:"tool_choice"`
 	Thinking      json.RawMessage    `json:"thinking"`
-	// OutputConfig 是 Anthropic 自适应思考的强度旋钮（{"effort":"low"}）。
+	// OutputConfig is the intensity knob for Anthropic adaptive thinking ({"effort":"low"}).
 	OutputConfig *struct {
 		Effort string `json:"effort"`
 	} `json:"output_config"`

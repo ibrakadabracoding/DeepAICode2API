@@ -53,7 +53,7 @@ func TestLoadFilesSkipsMissingAndBrokenLines(t *testing.T) {
 	}
 }
 
-// .env 中不存在的键不应被清空：LoadFiles 只做新增。
+// Keys absent from .env must not be cleared: LoadFiles only adds new entries.
 func TestLoadFilesDoesNotUnset(t *testing.T) {
 	t.Setenv("ENVFILE_UNTOUCHED", "keep")
 	_ = LoadFiles(writeEnv(t, ".env", "ENVFILE_OTHER=1\n"))

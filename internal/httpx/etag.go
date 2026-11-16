@@ -2,10 +2,11 @@ package httpx
 
 import "strings"
 
-// ETagMatches 判断 If-None-Match 里是否包含目标 ETag。
+// ETagMatches reports whether If-None-Match contains the target ETag.
 //
-// 支持逗号分隔列表、弱校验前缀（W/）与 "*"（匹配任意当前表示）。
-// 控制台资产与 /admin/api/* 的 304 协商共用这一份实现。
+// Supports comma-separated lists, the weak validator prefix (W/), and "*" (matches
+// any current representation). Console assets and /admin/api/* 304 negotiation
+// share this implementation.
 func ETagMatches(header, etag string) bool {
 	header = strings.TrimSpace(header)
 	if header == "" {

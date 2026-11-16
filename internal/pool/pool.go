@@ -1,10 +1,13 @@
-// Package pool 实现号池的选号策略（分组过滤 + 失败度加权轮询 + 额度感知）。
+// Package pool implements the account pool's selection strategy (group filtering + failure-weighted
+// rotation + quota awareness).
 //
-// 这些是业务策略而不是持久化细节，原先住在 store 包里导致：
-//   - 单测必须构造完整 Store 才能验证调度；
-//   - 调整「0 额度何时算陈旧」这类规则要动持久化层。
+// These are business policies rather than persistence details; they used to live in the store
+// package, which meant:
+//   - unit tests had to construct a complete Store just to verify scheduling;
+//   - tweaking rules like "when a 0 quota is considered stale" required touching the persistence
+//     layer.
 //
-// 抽出来后 Scheduler 不持有账号列表，调用方在持锁状态下把快照传进来。
+// After extraction, Scheduler holds no account list; callers pass a snapshot in while holding the lock.
 package pool
 
 import (
@@ -16,53 +19,55 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// QuotaStaleAfter 是「0 额度」被判为陈旧、需要重探的时限。
+// QuotaStaleAfter is the age after which a "0 quota" is considered stale and needs reprobing.
 //
-// 新注册的账号在入池那一刻常常还是 0，几分钟后才会下发当日额度
-// （见 README §6.10 实测）。把陈旧的 0 当作「未知」，避免账号被永久
-// 排除在调度之外。
+// Newly registered accounts are often still at 0 the moment they join the pool; the daily quota is
+// only granted a few minutes later (see README §6.10, measured). Treat a stale 0 as "unknown", so
+// an account is not permanently excluded from scheduling.
 const QuotaStaleAfter = 15 * time.Minute
 
-// Scheduler 保存轮询游标，实现号池选号。
+// Scheduler holds the rotation cursor and implements account pool selection.
 //
-// 游标用 atomic 而不是普通 int：选号是每个请求一次的热路径，改成原子量后
-// 调用方（store）可以用读锁并发选号，不必为了推进游标去抢写锁。
+// The cursor uses atomic rather than a plain int: selection is a per-request hot path, and with an
+// atomic the caller (store) can select concurrently under a read lock without taking the write
+// lock just to advance the cursor.
 type Scheduler struct {
 	rotate atomic.Int64
 }
 
-// New 构造一个调度器。
+// New constructs a scheduler.
 func New() *Scheduler { return &Scheduler{} }
 
-// Pick 在 accounts 里按分组与健康度选一个账号；无可用账号时返回 nil。
+// Pick selects an account from accounts by group and health; returns nil when none is available.
 //
-// group 为空表示全部分组。调度分两轮：
-//  1. 只考虑「额度未知或额度 > 0」的账号——上游按机器发每日免费额度，
-//     池里常有 balance=0 的账号，先打过去只会被上游拒一次再换号；
-//  2. 再在全集里选，保证有账号时绝不硬阻塞。
+// An empty group means all groups. Selection has two rounds:
+//  1. Consider only accounts with "unknown quota or quota > 0"-upstream grants a daily free quota
+//     per machine, and the pool often has balance=0 accounts; hitting one first only gets rejected
+//     once by upstream before rotating;
+//  2. Then select from the full set, ensuring we never hard-block while an account exists.
 //
-// 每轮内部优先选失败次数最少的账号，同失败度时按轮询游标推进。
+// Within each round, prefer the account with the fewest failures; ties advance by the rotation cursor.
 func (s *Scheduler) Pick(accounts []*deepai.Account, group string) *deepai.Account {
 	return s.PickFiltered(accounts, group, nil)
 }
 
-// PickFiltered 在 Pick 的基础上叠加一个额外过滤谓词。
+// PickFiltered adds an extra filter predicate on top of Pick.
 //
-// skip 用于「并发槽位已满」这类与账号健康度无关的临时排除，必须是**纯函数**：
-// 第一轮扫描不到时会再扫第二轮，同一账号可能被问两次。
+// skip is used for temporary exclusions unrelated to account health, such as "concurrent slots full"; it must be a **pure function**:
+// If the first scan finds nothing, a second scan is performed; the same account may be queried twice.
 func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip func(*deepai.Account) bool) *deepai.Account {
 	group = strings.TrimSpace(group)
 	eligible := func(a *deepai.Account) bool {
 		if !a.Enabled {
 			return false
 		}
-		// 上游策略拦截（social_login_required）是账号级终态：
-		// 继续轮询只会把每个请求都撞一次 403。
+		// Upstream policy interception (social_login_required) is an account-level terminal state:
+		// Continuing rotation only causes every request to hit a 403 once.
 		if a.Status == deepai.StatusBlocked {
 			return false
 		}
-		// 当日额度用完（theos_exhausted）：到点前不参与调度，避免每个请求
-		// 都白撞一次 403。过了 QuotaUntil 自动恢复，无需人工处理。
+		// Daily quota exhausted (theos_exhausted): not scheduled until the reset time, to avoid every request
+		// hitting a pointless 403. Automatically recovers after QuotaUntil; no manual intervention needed.
 		if a.QuotaUntil > 0 && time.Now().Unix() < a.QuotaUntil {
 			return false
 		}
@@ -77,8 +82,8 @@ func (s *Scheduler) PickFiltered(accounts []*deepai.Account, group string, skip 
 	return s.pick(accounts, eligible, false)
 }
 
-// HasEligible 报告池里是否存在可调度账号（分组 / 启用 / 未拦截），
-// 忽略 PickFiltered 的 skip。调用方用它区分「全忙」与「池里没号」。
+// HasEligible reports whether the pool contains any schedulable account (grouped / enabled / not intercepted),
+// ignoring PickFiltered's skip. Callers use it to distinguish "all busy" from "no accounts in the pool".
 func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
 	group = strings.TrimSpace(group)
 	now := time.Now().Unix()
@@ -96,9 +101,9 @@ func (s *Scheduler) HasEligible(accounts []*deepai.Account, group string) bool {
 	return false
 }
 
-// pick 在 eligible 里按「失败最少 + 轮询」选一个账号。
+// pick selects an account from eligible by "fewest failures + rotation".
 //
-// needQuota 为 true 时跳过已知额度为 0 的账号。
+// When needQuota is true, skip accounts known to have 0 quota.
 func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Account) bool, needQuota bool) *deepai.Account {
 	n := len(accounts)
 	if n == 0 {
@@ -134,10 +139,10 @@ func (s *Scheduler) pick(accounts []*deepai.Account, eligible func(*deepai.Accou
 	return best
 }
 
-// HasQuota 报告账号是否可能还有可用额度。
+// HasQuota reports whether an account may still have available quota.
 //
-// 保守为准：只有「探测过、启用、且余额能解析为 0」的账号才算耗尽，
-// 其余（未探测 / 解析不了 / 已付费）都当作可能可用。
+// Be conservative: only accounts that are "probed, enabled, and whose balance parses to 0" are considered exhausted,
+// all others (not probed / unparseable / already paid) are treated as potentially available.
 func HasQuota(a *deepai.Account) bool {
 	if a == nil || a.Theos == nil || !a.Theos.Enabled {
 		return true
@@ -153,7 +158,7 @@ func HasQuota(a *deepai.Account) bool {
 	if v > 0 {
 		return true
 	}
-	// 0 额度只在「刚探过」时才算数。
+	// 0 quota only counts when "just probed".
 	if a.Theos.CheckedAt <= 0 {
 		return true
 	}

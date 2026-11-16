@@ -7,7 +7,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// benchAccounts 构造 n 个健康账号（含一个 balance 字段，贴近真实快照）。
+// benchAccounts builds n healthy accounts (including a balance field, close to a real snapshot).
 func benchAccounts(n int) []*deepai.Account {
 	out := make([]*deepai.Account, 0, n)
 	for i := 0; i < n; i++ {
@@ -24,10 +24,11 @@ func benchAccounts(n int) []*deepai.Account {
 	return out
 }
 
-// BenchmarkPick500 是选号热路径的基线。
+// BenchmarkPick500 is the baseline for the account-selection hot path.
 //
-// 目标：500 个号的池子里单次选号保持在纳秒级、零额外分配。
-// 若哪天有人把「深拷贝整个池」塞回来，这里的 ns/op 与 allocs/op 会立刻变形。
+// Goal: a single pick from a 500-account pool stays at nanosecond scale with zero extra
+// allocations. If someone ever reintroduces a "deep-copy the whole pool", the ns/op and allocs/op
+// here will immediately show it.
 func BenchmarkPick500(b *testing.B) {
 	s := New()
 	accounts := benchAccounts(500)
@@ -40,7 +41,7 @@ func BenchmarkPick500(b *testing.B) {
 	}
 }
 
-// BenchmarkPickFiltered500 覆盖「带并发槽位过滤」的路径（服务端实际用法）。
+// BenchmarkPickFiltered500 covers the path with concurrency-slot filtering (the server's actual usage).
 func BenchmarkPickFiltered500(b *testing.B) {
 	s := New()
 	accounts := benchAccounts(500)
@@ -54,7 +55,7 @@ func BenchmarkPickFiltered500(b *testing.B) {
 	}
 }
 
-// BenchmarkHasEligible500 覆盖全忙判定路径。
+// BenchmarkHasEligible500 covers the all-busy determination path.
 func BenchmarkHasEligible500(b *testing.B) {
 	s := New()
 	accounts := benchAccounts(500)

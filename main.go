@@ -1,7 +1,8 @@
-// DeepAICode2API 把本机 DeepAI Code 桌面端的上游模型服务，
-// 逆向复刻成一个 OpenAI / Anthropic 兼容的 Go 网关。
+// DeepAICode2API reverse-engineers the upstream model service of the local DeepAI
+// Code desktop app into an OpenAI / Anthropic compatible Go gateway.
 //
-// 复用桌面端已登录的 API Key，无需另申请密钥；纯 Go 标准库实现。
+// It reuses the API Key already logged in on the desktop app, so no separate key is
+// needed; implemented with the pure Go standard library.
 package main
 
 import (
@@ -25,17 +26,20 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// version 由构建时注入：-ldflags "-X main.version=1.0.0"
+// version is injected at build time: -ldflags "-X main.version=1.0.0"
 var version = "dev"
 
 func main() {
-	// 日志先于一切：把标准库 log 的输出接管成一行一条 JSON。
-	// 既有 log.Printf 调用不需要改，msg 字段保留原文。
+	// Logging comes before everything else: take over the standard library log
+	// output as one JSON object per line. Existing log.Printf calls need no changes;
+	// the msg field keeps the original text.
 	logx.Setup(nil)
 
-	// 必须在任何环境变量读取之前执行：flag 默认值（envOr）与 store.Open 的
-	// 主密钥都直读进程环境。此前 .env 只在注册链路里惰性加载，导致
-	// DEEPAI2API_MASTER_KEY 对网关启动永远不生效（状态文件只能保持明文）。
+	// This must run before any environment variable is read: flag defaults (envOr)
+	// and store.Open's master key read the process environment directly. Previously
+	// .env was loaded lazily only in the registration pipeline, so
+	// DEEPAI2API_MASTER_KEY never took effect for gateway startup (the state file
+	// could only remain plaintext).
 	envfile.Load()
 
 	var (
@@ -98,7 +102,7 @@ func main() {
 		return
 	}
 
-	// 命令行 / 环境变量优先级高于状态文件；设置后立即落盘。
+	// Command-line / environment variables take precedence over the state file; persist immediately after setting.
 	if *adminPw != "" {
 		st.UpdateSettings(func(s *store.Settings) { s.AdminPassword = *adminPw })
 		if err := st.Save(); err != nil {
@@ -118,9 +122,11 @@ func main() {
 		}
 	}
 
-	// 非回环监听意味着网关已接入局域网 / 公网，此时两项底线不能靠“默认值”撑着：
-	// 管理面必须有密码，数据面必须已有密钥。否则从启动到人工创建密钥之间，
-	// 上游账号池就是一个无需鉴权的开放中继。
+	// Non-loopback listening means the gateway is exposed to the LAN / public
+	// network, and two baselines cannot rely on "defaults" then: the admin side
+	// must have a password, and the data plane must already have a key. Otherwise,
+	// from startup until a key is created manually, the upstream account pool is an
+	// open relay with no authentication.
 	if !isLoopbackListen(*host) {
 		if st.Settings().AdminPassword == "" && !*allowOpen {
 			log.Fatalf("监听地址 %q 不是回环地址，但未设置管理密码：控制台会对局域网开放。\n"+
@@ -146,18 +152,21 @@ func main() {
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 20 * time.Second,
-		// 请求体是 JSON（最大 64MB 附件走 extensions），60s 足够；
-		// 没有它时慢速请求可以长期占着连接不释放。
+		// Request bodies are JSON (attachments up to 64MB go through extensions), so 60s is
+		// enough; without it, slow requests could occupy connections indefinitely.
 		ReadTimeout: 60 * time.Second,
-		// keep-alive 空闲连接回收；流式响应可能持续数分钟，故不设 WriteTimeout。
+		// Reclaim idle keep-alive connections; streaming responses may last several
+		// minutes, so WriteTimeout is not set.
 		IdleTimeout: 120 * time.Second,
 	}
 
-	// 后台任务：首个目录拉取 + 定期落盘 + 定期刷新模型目录。
-	// 有意放在监听之前启动：首个目录拉取可能与上游耗上 20s 超时，
-	// 先起它、再起监听，两者并行，互不阻塞。
+	// Background tasks: initial catalog fetch + periodic persistence + periodic model
+	// catalog refresh. Deliberately started before listening: the initial catalog fetch
+	// may hit the upstream's 20s timeout, so start it first and then start listening;
+	// the two run in parallel without blocking each other.
 	stopBG := make(chan struct{})
-	// 车道探测：只打免鉴权的 /models，命中即落盘；失败沿用旧值，不阻塞启动。
+	// Lane probing: only hits the unauthenticated /models; persist on success, keep the
+	// old value on failure, and do not block startup.
 	go func() {
 		lane, err := srv.RefreshLane(context.Background())
 		if err != nil {
@@ -171,8 +180,9 @@ func main() {
 	go quotaGuard(srv, stopBG)
 
 	go func() {
-		// 一行结构化摘要：加密状态、数据路径、号池规模这些排障第一眼看的东西
-		// 之前散在多行中文日志里，机器采集只能靠正则。JSON 行可直接 grep/jq。
+		// One structured summary line: things like encryption state, data path, and pool
+		// size used to be scattered across multi-line Chinese logs, and machine
+		// collection could only use regex. A JSON line can be grepped/jq'd directly.
 		total, ready := st.AccountCounts()
 		summary, _ := json.Marshal(map[string]any{
 			"event":         "startup",
@@ -216,8 +226,9 @@ func main() {
 	if err := httpSrv.Shutdown(ctx); err != nil {
 		log.Printf("关闭异常: %v", err)
 	}
-	// 等后台探测 / 复探把已经写进内存的结果落盘，再保存退出。
-	// 顺序不能反：反过来会让最后那次 Save 被后台的 Save 覆盖成旧快照。
+	// Wait for background probing / re-probing to persist results already written in
+	// memory, then save on exit. The order matters: reversing it would let the final
+	// Save be overwritten by a background Save with an older snapshot.
 	srv.Close(ctx)
 	if err := st.Save(); err != nil {
 		log.Printf("保存状态失败: %v", err)
@@ -225,9 +236,13 @@ func main() {
 	log.Printf("已退出")
 }
 
-// background 负责首个模型目录拉取、定期持久化与周期性目录刷新。
+// background handles the initial model catalog fetch, periodic persistence, and
+// periodic catalog refresh.
 //
-// 首个拉取放在这里而不是 main() 里同步执行：上游不通时 RefreshModels 要等满
-// 20s 超时（实测日志里 "机器指纹" 到 "已启动" 正好差 20 秒），同步做会把
-// 「开始监听」整体拖后。目录为空时 /v1/models 与模型解析都回落到内置兜底
-// 条目（server.catalog / registry.Resolve），所以先监听、后补目录是安全的。
+// The initial fetch lives here rather than running synchronously in main(): when the
+// upstream is unreachable, RefreshModels waits out the full 20s timeout (in measured
+// logs, the machine-fingerprint line and the started line are exactly 20 seconds
+// apart), and doing it synchronously would delay "listening" as a whole. When the
+// catalog is empty, /v1/models and model resolution fall back to built-in fallback
+// entries (server.catalog / registry.Resolve), so listening first and filling in the
+// catalog later is safe.

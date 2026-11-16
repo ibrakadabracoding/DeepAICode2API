@@ -1,7 +1,7 @@
-// Package registry 维护对外暴露的模型清单与别名解析。
+// Package registry maintains the externally exposed model list and alias resolution.
 //
-// DeepAI Code 的模型目录由上游 /deepai_code/models 动态下发，本包只做
-// 缓存快照上的解析与别名扩展，不承担网络请求。
+// The DeepAI Code model catalog is dynamically delivered by the upstream /deepai_code/models; this package only performs
+// resolution and alias expansion on the cached snapshot, and does not handle network requests.
 package registry
 
 import (
@@ -10,20 +10,20 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// Resolve 把用户传入的模型名解析为目录中的模型。
+// Resolve resolves the model name passed in by the user to a model in the catalog.
 //
-// 依次尝试：去掉 deepai/ 前缀 → 精确 ID → 自定义别名 → 内置别名 →
-// 包含匹配 → 回落到 defaultID → 回落到第一个模型。
+// Tries in order: strip the deepai/ prefix → exact ID → custom alias → built-in alias →
+// substring match → fall back to defaultID → fall back to the first model.
 //
-// 无法识别时不报错而是回落：这样任意客户端（Claude Code / Cline /
-// OpenAI SDK）都能用自己习惯的模型名开箱即用。
+// When unrecognized, it does not error but falls back: this way any client (Claude Code / Cline /
+// OpenAI SDK) can work out of the box with the model names it is used to.
 func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID string) deepai.Model {
 	if m, ok := ResolveStrict(catalog, aliases, name, defaultID); ok {
 		return m
 	}
 	n := normalize(name)
 	if n != "" {
-		// 宽松匹配：模型名包含用户输入，或用户输入包含模型 ID。
+		// Loose matching: the model name contains the user input, or the user input contains the model ID.
 		for _, m := range catalog {
 			if strings.Contains(strings.ToLower(m.ID), n) {
 				return m
@@ -40,14 +40,14 @@ func Resolve(catalog []deepai.Model, aliases map[string]string, name, defaultID 
 	return deepai.DefaultModelEntry()
 }
 
-// ResolveStrict 与 Resolve 的“有依据”解析部分一致，但不做任何隐式回落。
+// ResolveStrict matches the "evidence-based" resolution part of Resolve, but performs no implicit fallback.
 //
-// 依次尝试：去掉前缀 → 精确 ID → 自定义别名 → 内置别名 → 模型名称匹配。
-// 全部不命中时返回 ok=false，**不**回落默认模型、**不**做子串包含匹配。
+// Tries in order: strip the prefix → exact ID → custom alias → built-in alias → model name match.
+// When nothing matches, returns ok=false, and does **not** fall back to the default model and does **not** do substring matching.
 //
-// 这是严格模式（Settings.StrictModel）的依据：子串匹配会把 "gpt-6" 解成
-// 目录里第一个 “gpt-6-*“（可能是另一个模型），默认回落更会把任意拼写
-// 错误变成默认模型——两者都会让调用方以为自己测的是 A，实际跑的是 B。
+// This is the basis for strict mode (Settings.StrictModel): substring matching would resolve "gpt-6" to
+// the first "gpt-6-*" in the catalog (possibly a different model), and default fallback would turn any typo
+// into the default model - both make the caller think they are testing A while actually running B.
 func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defaultID string) (deepai.Model, bool) {
 	n := normalize(name)
 	if n == "" {
@@ -74,11 +74,11 @@ func ResolveStrict(catalog []deepai.Model, aliases map[string]string, name, defa
 	return deepai.Model{}, false
 }
 
-// Suggest 返回与 name 相关的目录 ID，用于严格模式下的可执行错误提示。
+// Suggest returns catalog IDs related to name, for actionable error messages in strict mode.
 //
-// 只做提示，不参与解析。相似度只要求“够像”：子串命中，或忽略标点后
-// 前 4 个字符相同（`gpt-6-sol` ↔ `gpt-6.1-sol` / `gpt-6-luna`，
-// `mimo-v2.6-flash` ↔ `mimo-2.6-flash`）。
+// It is only a hint and does not participate in resolution. Similarity only requires "close enough": substring hit, or
+// the first 4 characters are the same after ignoring punctuation (`gpt-6-sol` ↔ `gpt-6.1-sol` / `gpt-6-luna`;
+// `mimo-v2.6-flash` ↔ `mimo-2.6-flash`).
 func Suggest(catalog []deepai.Model, name string, max int) []string {
 	n := normalize(name)
 	if n == "" || max <= 0 {
@@ -104,7 +104,7 @@ func Suggest(catalog []deepai.Model, name string, max int) []string {
 	return out
 }
 
-// similarityKey 去掉分隔符，避免 `6.1` 与 `6-1`、“v2.6” 与 “2.6” 的差异。
+// similarityKey strips separators to avoid differences between `6.1` and `6-1`, "v2.6" and "2.6".
 func similarityKey(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
@@ -127,7 +127,7 @@ func commonPrefix(a, b string) int {
 	return i
 }
 
-// List 返回对外模型清单（含自定义别名）。
+// List returns the external model list (including custom aliases).
 func List(catalog []deepai.Model, aliases map[string]string) []deepai.Model {
 	out := make([]deepai.Model, len(catalog))
 	copy(out, catalog)
@@ -145,9 +145,9 @@ func List(catalog []deepai.Model, aliases map[string]string) []deepai.Model {
 	return out
 }
 
-// builtinAliases 是常见客户端模型名到 DeepAI 模型的映射。
+// builtinAliases maps common client model names to DeepAI models.
 //
-// 只包含默认免费模型：用户可在控制台覆盖为任意目标。
+// Contains only the default free models: users can override them in the console to any target.
 var builtinAliases = map[string]string{
 	"deepai":            deepai.DefaultModel,
 	"deepai-code":       deepai.DefaultModel,
@@ -166,14 +166,14 @@ var builtinAliases = map[string]string{
 
 func normalize(name string) string {
 	n := strings.TrimSpace(strings.ToLower(name))
-	// 客户端常用 deepai/<id> 或 openai/<id> 前缀。
+	// Clients commonly use the deepai/<id> or openai/<id> prefix.
 	for _, prefix := range []string{"deepai/", "deepai:", "openai/", "openai:"} {
 		if strings.HasPrefix(n, prefix) {
 			n = strings.TrimSpace(strings.TrimPrefix(n, prefix))
 			break
 		}
 	}
-	// 模型名里的空白当分隔符："Claude Opus 5.5" 与 "claude-opus-5.5" 等价。
+	// Whitespace in model names is treated as a separator: "Claude Opus 5.5" is equivalent to "claude-opus-5.5".
 	return strings.Join(strings.Fields(n), "-")
 }
 
@@ -198,7 +198,7 @@ func lookupAlias(aliases map[string]string, key string) (string, bool) {
 	return "", false
 }
 
-// Find 返回 ID 精确匹配的模型。
+// Find returns the model with an exact ID match.
 func Find(catalog []deepai.Model, id string) (deepai.Model, bool) {
 	return lookup(catalog, normalize(id))
 }

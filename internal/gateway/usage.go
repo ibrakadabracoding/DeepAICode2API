@@ -2,22 +2,22 @@ package gateway
 
 import "encoding/json"
 
-// Usage 是归一化后的 token / 成本用量。
+// Usage is normalized token / cost usage.
 type Usage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	ReasoningTokens  int
-	// CachedTokens 是「命中前缀缓存」的 prompt token 数。
+	// CachedTokens is the number of prompt tokens that hit the prefix cache.
 	//
-	// 上游形态不一致：OpenAI 风格的 prompt_tokens_details.cached_tokens、
-	// Responses 风格的 input_tokens_details.cached_tokens、
-	// Anthropic 风格的 cache_read_input_tokens。三个都收。
+	// Upstream shapes differ: OpenAI-style prompt_tokens_details.cached_tokens,
+	// Responses-style input_tokens_details.cached_tokens, and Anthropic-style
+	// cache_read_input_tokens. All three are accepted.
 	CachedTokens int
 	Cost         float64
 }
 
-// ParseUsage 兼容 chat/completions 与 responses 两种用量字段。
+// ParseUsage supports both chat/completions and responses usage fields.
 func ParseUsage(v any) Usage {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -51,7 +51,7 @@ func ParseUsage(v any) Usage {
 	return u
 }
 
-// cachedTokensOf 从三种上游形态里取缓存命中的 prompt token 数。
+// cachedTokensOf extracts the cache-hit prompt token count from the three upstream shapes.
 func cachedTokensOf(m map[string]any) int {
 	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
 		if d, ok := m[key].(map[string]any); ok {

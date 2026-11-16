@@ -20,7 +20,8 @@ func TestForRunsEveryIndexOnce(t *testing.T) {
 	}
 }
 
-// 并发上限必须被遵守：用原子计数器记录同时在跑的任务数峰值。
+// The concurrency limit must be honored: an atomic counter tracks the peak number of tasks
+// running at once.
 func TestForRespectsConcurrencyLimit(t *testing.T) {
 	const limit, count = 3, 36
 	var cur, peak int32
@@ -43,7 +44,7 @@ func TestForRespectsConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// ctx 已取消时不派发任何任务。
+// No task is dispatched when ctx is already canceled.
 func TestForSkipsEverythingWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -57,7 +58,7 @@ func TestForSkipsEverythingWhenCanceled(t *testing.T) {
 	}
 }
 
-// 边界：count<=0 / workers<=0 不应 panic。
+// Edge cases: count<=0 / workers<=0 must not panic.
 func TestForEdgeCases(t *testing.T) {
 	For(t.Context(), 4, 0, func(context.Context, int) { t.Fatal("不应执行") })
 	For(t.Context(), 0, 3, func(context.Context, int) {})
