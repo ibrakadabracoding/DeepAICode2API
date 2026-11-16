@@ -1,428 +1,387 @@
-# 性能测量与优化方案（2026-11）
+# Performance Measurement and Optimization Plan (2026-11)
 
-第三批 50 账号压测的实测数据，以及据此推导的优化方案。
-结论先说：**瓶颈不在代码，在两个「等待」**——验证邮件等待（55%）和串行化的阶段顺序。
-按 P0 三项改造，单号端到端可从 **27.0s 降到约 15.5s**，吞吐翻倍。
+Measured data from the third batch of 50-account stress tests, along with the optimization plan derived from it.
+Bottom line first: **the bottleneck is not in the code but in two "waits"** - waiting for verification emails (55%) and the serialized stage order.
+With the three P0 changes, per-account end-to-end time can drop from **27.0s to about 15.5s**, doubling throughput.
 
-> 本文保留**测量数据**（阶段分解、收益测算、批次基线）；逐批执行日志已不再
-> 增补。可复用规则、检查清单与失效边界见 `docs/lessons.md`，
-> 当前验收基线见 README §6.11。
+> This document retains the **measurement data** (stage breakdown, benefit estimates, batch baselines); per-batch execution logs are no longer
+> being added. For reusable rules, checklists, and failure boundaries, see `docs/lessons.md`;
+> for the current acceptance baseline, see README §6.11.
 
 ---
+## 1. Measurement Method
 
-## 1. 测量方法
-
-`register.Record` 新增 `FinishedAt`（秒，含小数）：
+`register.Record` now includes `FinishedAt` (seconds, including fractional values):
 
 ```go
-E2E = FinishedAt - CreatedAt     // 该账号从建邮箱到入池的真实耗时
+E2E = FinishedAt - CreatedAt     // real elapsed time for this account from mailbox creation to pool entry
 ```
 
-- `CreatedAt` 在 `runOne` 开始时写入（**不含**排队等待 `waitTurn` 的时间）；
-- `FinishedAt` 在 `finish()` / `resumeWithKey()` 结束时写入；
-- 每次尝试都写台账，因此可区分「首次尝试」与「补跑」；
-- 阶段耗时来自 `Record.Timings`（每个 stage 的秒数，`Mark()` 写入）。
+- `CreatedAt` is written at the start of `runOne` (**excluding** time spent waiting in the queue for `waitTurn`);
+- `FinishedAt` is written when `finish()` / `resumeWithKey()` ends;
+- Each attempt is recorded in the ledger, so "first attempt" and "rerun" can be distinguished;
+- Stage durations come from `Record.Timings` (seconds per stage, written by `Mark()`).
 
-复现：
+To reproduce:
 
 ```bash
 ./register.exe -count 50 -concurrency 5 -group stress-50c-$(date +%Y%m%d) \
   -result-dir result/stress50c
-# 然后按 group 过滤 exports/register-ledger.jsonl
+# then filter exports/register-ledger.jsonl by group
 ```
+## 2. Comparison of Three Live Test Batches
 
-## 2. 三批实测对比
-
-| 批次 | 账号 | 并发 | 出口 | 墙钟 | 入池 | 单号平均 E2E |
+| Batch | Accounts | Concurrency | Egress | Wall Clock | Pooled | Avg E2E per Account |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 第一批 | 50 | 5 | 10 | 4m40s | 47（-resume 49） | — |
-| 第二批 | 50 | 5 | 12 | 8m23s | 49（-resume 51） | — |
-| **第三批** | **50** | **5** | **12** | **4m39s** | **46（-resume 49）** | **27.0s** |
+| Batch 1 | 50 | 5 | 10 | 4m40s | 47 (-resume 49) | - |
+| Batch 2 | 50 | 5 | 12 | 8m23s | 49 (-resume 51) | - |
+| **Batch 3** | **50** | **5** | **12** | **4m39s** | **46 (-resume 49)** | **27.0s** |
 
-> 前两批未埋点，只有墙钟；第三批起有逐号 `FinishedAt`。
+> The first two batches had no instrumentation, only wall clock; from Batch 3 onward, per-account `FinishedAt` is available.
+## 3. Third Batch: Per-Account End-to-End Rate
 
-## 3. 第三批：单号端到端速率
-
-| 指标 | 值 |
+| Metric | Value |
 | --- | --- |
-| 样本 | 50 个账号（全部有 E2E） |
-| 平均 | **27.0s** |
-| 中位数 | 25.3s |
+| Sample | 50 accounts (all with E2E) |
+| Mean | **27.0s** |
+| Median | 25.3s |
 | p90 / p95 | 33.3s / 35.0s |
-| 最小 / 最大 | 21.0s / 37.7s |
-| 墙钟 | 279s（4m39s） |
-| **平均速率** | **5.58s/号 = 10.75 号/分钟 = 645 号/小时** |
-| 并发利用率 | **4.83 / 5 = 96.6%** |
+| Min / Max | 21.0s / 37.7s |
+| Wall clock | 279s (4m39s) |
+| **Average rate** | **5.58s/account = 10.75 accounts/min = 645 accounts/hour** |
+| Concurrency utilization | **4.83 / 5 = 96.6%** |
 
-并发利用率 = `sum(E2E) / 墙钟`。96.6% 说明 5 个 worker **几乎没有空转**，
-吞吐完全由「单号耗时 ÷ 并发数」决定 —— 想提速只有两条路：**降单号耗时**或**加并发**。
+Concurrency utilization = `sum(E2E) / wall clock`. 96.6% means the 5 workers are **almost never idle**;
+throughput is entirely determined by "per-account time ÷ concurrency" - there are only two ways to speed things up: **reduce per-account time** or **increase concurrency**.
+## 4. Stage Breakdown (mean, as a share of 27.0s)
 
-## 4. 阶段分解（均值，占 27.0s 的比例）
-
-| 阶段 | 均值 | 占比 | 性质 |
+| Stage | Mean | Share | Nature |
 | --- | ---: | ---: | --- |
-| `verify`（等验证邮件） | **14.8s** | **54.8%** | 纯等待 |
-| `exists`（邮箱是否已注册） | 3.3s | 12.1% | 网络往返（**可省**） |
-| `validate`（`/theos` 验活） | 3.1s | 11.6% | 网络往返（必需） |
-| `enroll`（入池） | 2.0s | 7.3% | 网络往返（**含重复探测**） |
-| `register`（建号） | 1.2s | 4.4% | 网络往返 |
-| `login` | 1.1s | 4.1% | 网络往返 |
-| `session` | 0.5s | 2.0% | 网络往返 |
-| `mailbox`（建收件箱） | 0.4s | 1.4% | 网络往返 |
+| `verify` (waiting for verification email) | **14.8s** | **54.8%** | Pure waiting |
+| `exists` (whether the email is already registered) | 3.3s | 12.1% | Network round trip (**can be skipped**) |
+| `validate` (`/theos` liveness check) | 3.1s | 11.6% | Network round trip (required) |
+| `enroll` (add to pool) | 2.0s | 7.3% | Network round trip (**includes duplicate probing**) |
+| `register` (create account) | 1.2s | 4.4% | Network round trip |
+| `login` | 1.1s | 4.1% | Network round trip |
+| `session` | 0.5s | 2.0% | Network round trip |
+| `mailbox` (create inbox) | 0.4s | 1.4% | Network round trip |
 
-**单号真实时间线**（第三批样本）：
+**Real timeline for a single account** (third batch of samples):
 
 ```text
-13:48:52 邮箱就绪
-13:48:57 注册成功              (+5s)
-13:49:02 取到 API Key          (+5s)   ← 不依赖邮箱验证
-13:49:16 邮箱验证完成          (+14s)  ← 纯等待，占满整个中段
-13:49:20 Key 验活通过          (+4s)
-13:49:25 已入池                (+5s)
+13:48:52 mailbox ready
+13:48:57 registration succeeded   (+5s)
+13:49:02 API Key obtained         (+5s)   ← does not depend on email verification
+13:49:16 email verification done  (+14s)  ← pure waiting, fills the entire middle segment
+13:49:20 Key liveness check passed (+4s)
+13:49:25 added to pool            (+5s)
 ```
 
-关键观察：**取 Key 早于验证完成**，所以验证等待完全可以与其他阶段重叠。
+Key observation: **the Key is obtained before verification completes**, so the verification wait can be fully overlapped with other stages.
+## 5. Failure Analysis (Third Batch)
 
-## 5. 失败分析（第三批）
+Of the 50 accounts, 4 failed to enter the pool, and **all of them were stuck at `/theos`**:
 
-50 个账号里 4 个未入池，**全部卡在 `/theos`**：
-
-| 账号数 | 阶段 | 错误 |
+| Account Count | Stage | Error |
 | ---: | --- | --- |
-| 3 | `enroll` | `HTTP 400 Key 验活失败: .../theos`（网关在入池时**又探了一次**） |
+| 3 | `enroll` | `HTTP 400 Key liveness check failed: .../theos` (the gateway **probed it again** during pool entry) |
 | 1 | `validate` | `unexpected EOF` |
 
-两个特征：
+Two patterns:
 
-1. **失败集中在同一类瞬时网络错误**，重试即可救回 —— `-resume` 两轮后 49/50；
-2. **入池路径重复探测**：pipeline 已经验活过（`validate`），网关的 `enroll`
-   又自己探一次 `/theos`。这一次多花 2.0s，还是 3 个失败的直接来源。
+1. **Failures are concentrated in the same type of transient network error** and can be recovered by retrying - after two rounds of `-resume`, 49/50;
+2. **Duplicate probing on the pool-entry path**: the pipeline has already performed a liveness check (`validate`), but the gateway's `enroll`
+ probes `/theos` again on its own. This adds 2.0s and is also the direct cause of the 3 failures.
 
 ---
+## 6. Optimization Plan
 
-## 6. 优化方案
+### P0-1 Stop re-probing `/theos` on enrollment (est. −2.0s/account, failure rate 8% → ~2%)
 
-### P0-1 入池不再二次探测 `/theos`（预计 −2.0s/号，失败率 8% → ~2%）
-
-**位置**：`internal/server/server.go` `handleAdminAccounts` 的 `actionEnroll` 分支
+**Location**: `internal/server/server.go`, the `actionEnroll` branch of `handleAdminAccounts`
 
 ```go
-al, err := s.clientFor(acct).Theos(ctx, acct)   // ← 重复探测
-if err != nil { /* 直接 400 拒绝 */ }
+al, err := s.clientFor(acct).Theos(ctx, acct)   // ← duplicate probe
+if err != nil { /* reject with 400 */ }
 ```
 
-**方案**：调用方（`register` 链路）已经在 payload 里带了 `theos_balance` /
-`theos_granted`，并且刚刚验活成功。改成：
+**Plan**: The caller (the `register` pipeline) already carries `theos_balance` /
+`theos_granted` in the payload and has just passed a liveness check. Change to:
 
-- 请求带 `"skip_probe": true` 且带 `theos_balance` → **信任调用方结果，不再探测**；
-- 控制台手工入池仍走探测（人可能填错 Key，值得验）；
-- 探测失败时 **重试一次**（1s 退避），只有重试仍失败才拒绝。
+- If the request has `"skip_probe": true` and includes `theos_balance` → **trust the caller's result, skip the probe**;
+- Manual enrollment from the console still probes (a human may have entered the wrong key, so it's worth verifying);
+- On probe failure, **retry once** (1s backoff); reject only if the retry also fails.
 
-**验收**：`enroll` 阶段均值 ≤ 0.6s；`stress-*` 批次里 `keyed` 状态归零。
+**Acceptance**: `enroll` stage mean ≤ 0.6s; `keyed` status drops to zero in `stress-*` batches.
 
-### P0-2 全新邮箱跳过存在性预检（预计 −3.3s/号）
+### P0-2 Skip the existence pre-check for brand-new mailboxes (est. −3.3s/account)
 
-**位置**：`internal/register/pipeline.go` 第 2 步「预检：邮箱是否已存在」
+**Location**: `internal/register/pipeline.go`, step 2 "Pre-check: does the email already exist"
 
-**方案**：新建的 CF 临时邮箱**必然**未注册，预检只对「补跑」和「用户指定邮箱」
-有意义。给 mailbox 返回一个 `Fresh bool`（`cfProvider.Create` 返回 true，
-`Inbox(email)` / `static` / `none` 返回 false），`Fresh` 时直接跳过 `exists`。
+**Plan**: A newly created CF temporary mailbox is **guaranteed** to be unregistered, so the pre-check only matters for "re-runs" and "user-specified mailboxes". Have the mailbox return a `Fresh bool` (`cfProvider.Create` returns true; `Inbox(email)` / `static` / `none` return false), and skip `exists` entirely when `Fresh` is set.
 
-**验收**：`exists` 阶段从新批次消失；补跑路径仍保留。
+**Acceptance**: The `exists` stage disappears from new batches; the re-run path still keeps it.
 
-### P0-3 验证等待与后续阶段并行（预计 −6.2s/号，−23%）
+### P0-3 Run the verification wait in parallel with later stages (est. −6.2s/account, −23%)
 
-**位置**：`pipeline.go` 的 `runOne` 阶段顺序
+**Location**: The stage order in `runOne` in `pipeline.go`
 
-**方案**：注册成功后立刻触发验证邮件，然后**不要阻塞**，继续 login → key；
-把 `WaitForVerification` 放到独立 goroutine，在 `validate` 之前 `join`：
+**Plan**: After a successful registration, trigger the verification email immediately, then **do not block** - continue with login → key. Move `WaitForVerification` into its own goroutine and `join` it before `validate`:
 
 ```text
-现在:  mailbox → register → login → key → verify(14.8s) → validate → enroll
-改后:  mailbox → register → login → key ┐
-                              verify ────┴→ validate → enroll      (并行)
+Now:    mailbox → register → login → key → verify(14.8s) → validate → enroll
+After:  mailbox → register → login → key ┐
+                              verify ────┴→ validate → enroll      (parallel)
 ```
 
-线程模型不变（一个账号仍占一个 worker），只是把等待藏在其他网络往返后面。
+The threading model is unchanged (one account still occupies one worker); the wait is simply hidden behind other network round-trips.
 
-**验收**：E2E 均值 ≤ 21s；`verify` 与 `key` 的时间区间在日志里重叠。
+**Acceptance**: E2E mean ≤ 21s; the `verify` and `key` time ranges overlap in the logs.
 
-### P1-1 并发 5 → 10（预计吞吐 +80%）
+### P1-1 Concurrency 5 → 10 (est. throughput +80%)
 
-利用率 96.6% 说明 5 并发已打满；出口有 12 条，`-concurrency 10` 仍低于出口数。
-前提是上游不触发风控 —— 建议先跑 20 个账号观察 `register` 阶段的错误率。
+A utilization of 96.6% shows that 5 concurrent workers are already saturated; there are 12 egress routes, so `-concurrency 10` is still below the egress count. The precondition is that upstream doesn't trigger rate limiting - it's recommended to run 20 accounts first and observe the error rate in the `register` stage.
 
-**验收**：50 账号墙钟 ≤ 2m30s；失败率不高于 5%。
+**Acceptance**: 50 accounts complete in ≤ 2m30s wall-clock; failure rate no higher than 5%.
 
-### P1-2 `/theos` 失败退避重试（失败率 8% → <2%）
+### P1-2 Backoff retry for `/theos` failures (failure rate 8% → <2%)
 
-**位置**：`pipeline.validate` 与 `client.Theos` 调用点
+**Location**: `pipeline.validate` and the `client.Theos` call sites
 
-现有 `Settings.MaxRetries` 只管推理请求，探测没有重试。加：网络错误 /
-5xx / 429 重试 2 次（1s、3s 退避）；401/403 不重试（那是 Key 真有问题）。
+The existing `Settings.MaxRetries` only covers inference requests; probes have no retries. Add: retry twice on network errors / 5xx / 429 (1s, 3s backoff); do not retry on 401/403 (that means the key really is bad).
 
-**验收**：`unexpected EOF` / `No exit node` / `TLS handshake timeout` 类失败
-在 50 账号批次中出现次数 ≤ 1。
+**Acceptance**: Failures of the `unexpected EOF` / `No exit node` / `TLS handshake timeout` kind occur ≤ 1 time in a 50-account batch.
 
-### P2-1 收信轮询 1s → 300ms
+### P2-1 Mail polling 1s → 300ms
 
-`verify` 14.8s 里有一部分是轮询粒度损失（平均 0.5s/号）。改成 300ms 可省
-约 0.3~0.5s/号，代价是对 CF Worker 的请求量 ×3。默认保持 1s，做成参数。
+Part of the 14.8s in `verify` is polling-granularity loss (0.5s/account on average). Changing to 300ms saves about 0.3-0.5s/account, at the cost of 3× the request volume to the CF Worker. Keep the default at 1s and make it a parameter.
 
-### P2-2 台账 / 交付物写入合并
+### P2-2 Merge ledger / deliverable writes
 
-每个账号当前写 3 次台账（`Append` 各带 `fsync`）+ 1 次交付物。
-高并发下是明显的 IO 放大。改成「批量追加 + 每批 fsync 一次」。
+Each account currently writes the ledger 3 times (each `Append` with its own `fsync`) plus 1 deliverable. Under high concurrency this is obvious IO amplification. Change to "batch append + one fsync per batch".
 
-**验收**：50 账号批次的 `Sync` 调用次数从 ~150 降到 ~5。
+**Acceptance**: `Sync` calls in a 50-account batch drop from ~150 to ~5.
 
-### P2-3 把速率做进控制台
+### P2-3 Surface rates in the console
 
-`Timings` 已经在台账里，只差聚合展示。在控制台「注册」页加：本批单号平均
-E2E、阶段耗时条形图、失败阶段分布。这样每次改动都能看到回退。
+`Timings` is already in the ledger; only the aggregated display is missing. Add to the "Register" page in the console: mean E2E per account for this batch, a stage-duration bar chart, and the failure-stage distribution. That way every change makes regressions visible.
 
 ---
+## 7. Expected Benefits Summary
 
-## 7. 预期收益汇总
-
-| 改动 | 单号 E2E | 50 号墙钟（并发 5） | 吞吐 |
+| Change | Per-order E2E | 50-order wall clock (concurrency 5) | Throughput |
 | --- | ---: | ---: | ---: |
-| 现状 | 27.0s | 279s | 10.75 号/分 |
-| + P0-2 | 23.7s | 245s | 12.2 号/分 |
-| + P0-1 | 21.7s | 225s | 13.3 号/分 |
-| + P0-3 | **15.5s** | **160s** | **18.8 号/分** |
-| + P1-1（并发 10） | 15.5s | **80s** | **37.5 号/分** |
+| Current state | 27.0s | 279s | 10.75 orders/min |
+| + P0-2 | 23.7s | 245s | 12.2 orders/min |
+| + P0-1 | 21.7s | 225s | 13.3 orders/min |
+| + P0-3 | **15.5s** | **160s** | **18.8 orders/min** |
+| + P1-1 (concurrency 10) | 15.5s | **80s** | **37.5 orders/min** |
 
-即：不动并发，仅改代码就能把吞吐提高 **75%**；再把并发提到 10，可达 **3.5×**。
+In other words: without touching concurrency, code changes alone raise throughput by **75%**; raising concurrency to 10 then reaches **3.5×**.
+## 8. Implementation Results (P0 / P1 / P2 All Delivered)
 
-## 8. 实施结果（P0 / P1 / P2 全部落地）
-
-| 项 | 状态 | 验证方式 |
+| Item | Status | Verification |
 | --- | --- | --- |
-| P0-1 入池免二次探测 | ✅ | `enroll` 阶段 2.0s → **0.00s**；本批 10/10 入池，0 失败 |
-| P0-2 新邮箱跳过预检 | ✅ | `exists` 标记为 `skipped (fresh)`，10/10 |
-| P0-3 验证等待并行 | ✅ | `validate` 移入并行窗口；同批 `verify` 与 `validate` 时间区间重叠 |
-| P1-1 并发不超过出口 | ✅ | `CapConcurrency` 单测 4 例；CLI / 服务端都生效 |
-| P1-2 验活退避重试 | ✅ | `IsTransient` 16 例、`theosWithRetry` 3 例 |
-| P2-1 自适应轮询 | ✅ | 起始 300ms、×1.5 退避到配置间隔；单测覆盖 |
-| P2-2 台账批量 fsync | ✅ | 20 行 / 1s 批量；`Ledger.Flush/Close` 由 CLI 与服务端任务调用 |
-| P2-3 控制台速率 | ✅ | 注册页顶部显示单号均值 / p50 / p95 / 阶段耗时 |
+| P0-1 No second probe on enrollment | ✅ | `enroll` phase 2.0s → **0.00s**; 10/10 enrolled in this batch, 0 failures |
+| P0-2 Skip pre-check for fresh emails | ✅ | `exists` marked as `skipped (fresh)`, 10/10 |
+| P0-3 Parallelize validation wait | ✅ | `validate` moved into the parallel window; `verify` and `validate` time ranges overlap within the same batch |
+| P1-1 Concurrency does not exceed egress | ✅ | `CapConcurrency` unit tests, 4 cases; effective on both CLI and server |
+| P1-2 Liveness check backoff retry | ✅ | `IsTransient` 16 cases, `theosWithRetry` 3 cases |
+| P2-1 Adaptive polling | ✅ | Starts at 300ms, ×1.5 backoff up to the configured interval; covered by unit tests |
+| P2-2 Batched ledger fsync | ✅ | 20 rows / 1s batches; `Ledger.Flush/Close` invoked by both CLI and server tasks |
+| P2-3 Console rate metrics | ✅ | Registration page header shows per-account mean / p50 / p95 / phase durations |
 
-### 实测对比（优化前 50 号 @并发 5 vs 优化后 50 号 @并发 10）
+### Measured Comparison (Before: 50 accounts @ concurrency 5 vs After: 50 accounts @ concurrency 10)
 
-| 指标 | 优化前（50 号 / 并发 5） | 优化后（50 号 / 并发 10） |
+| Metric | Before (50 accounts / concurrency 5) | After (50 accounts / concurrency 10) |
 | --- | ---: | ---: |
-| 入池 | 46/50（补跑后 49） | **50/50** |
-| 失败账号 | 4 | **0** |
-| 墙钟 | 279s | **233s** |
-| 吞吐 | 10.75 号/分 | **12.88 号/分（+20%）** |
-| 单号 E2E 均值 | 27.0s | 31.4s（去离群 28.0s） |
-| `exists` | 3.3s | **0（`skipped (fresh)`）** |
+| Enrolled | 46/50 (49 after re-run) | **50/50** |
+| Failed accounts | 4 | **0** |
+| Wall clock | 279s | **233s** |
+| Throughput | 10.75 accounts/min | **12.88 accounts/min (+20%)** |
+| Per-account E2E mean | 27.0s | 31.4s (28.0s excluding outlier) |
+| `exists` | 3.3s | **0 (`skipped (fresh)`)** |
 | `enroll` | 2.0s | **0.00s** |
 | `verify` | 14.8s | 20.3s |
 | `validate` | 3.1s | 4.3s |
-| 并发利用率 | 4.83 / 5 = 97% | 6.73 / 10 = 67% |
+| Concurrency utilization | 4.83 / 5 = 97% | 6.73 / 10 = 67% |
 
-**怎么读这组数**：
+**How to read these numbers**:
 
-- **确定的收益**：5.3s 的可去除开销清零（`exists` 3.3 + `enroll` 2.0），
-  入池失败率从 8% 降到 **0**，吞吐 +20%（并发 5 → 10）。
-- **单号 E2E 没降**（31.4s vs 27.0s）：因为 `verify`（外部邮件投递）本轮
-  慢了 5.5s，把省下的 5.3s 抵消了；去掉 1 个 198s 的投递离群后是 28.0s。
-  并发从 5 提到 10 也会抬高单号耗时（出口/上游争用，`validate` 3.1s → 4.3s）。
-- **利用率 67%** 说明 10 并发还没打满：理论上限 `10 × 60 / 31.4 ≈ 19 号/分`，
-  实际 12.88，差距来自「5 波 × 部分尾波」和 `MinInterval` 拉开的启动间隔。
-  想再提速应该加出口（现在 12 条）而不是继续加并发。
+- **Definite gains**: 5.3s of removable overhead eliminated (`exists` 3.3 + `enroll` 2.0),
+ enrollment failure rate dropped from 8% to **0**, throughput +20% (concurrency 5 → 10).
+- **Per-account E2E did not decrease** (31.4s vs 27.0s): because `verify` (external email delivery) was
+ 5.5s slower this round, offsetting the 5.3s saved; excluding one 198s delivery outlier, it is 28.0s.
+ Raising concurrency from 5 to 10 also increases per-account latency (egress/upstream contention, `validate` 3.1s → 4.3s).
+- **Utilization of 67%** indicates that concurrency 10 is not yet saturated: the theoretical ceiling is `10 × 60 / 31.4 ≈ 19 accounts/min`,
+ actual is 12.88; the gap comes from "5 waves × partial tail waves" and the startup interval spread by `MinInterval`.
+ To speed up further, add egress (currently 12) rather than increasing concurrency.
 
-结论：**可去除开销已清零、失败率已归零、单号耗时已完全由邮件投递决定**。
-下一步只能从邮件获取方式上要收益（例如把轮询换成推送），而不是继续在网关侧优化。
+Conclusion: **removable overhead is eliminated, failure rate is zero, and per-account latency is now entirely determined by email delivery**.
+The next step can only yield gains from the email retrieval method (e.g., switching from polling to push), not from further gateway-side optimization.
+## 10. P0-4: Move `verify` Off the Critical Path (Implemented)
 
-## 10. P0-4：把 verify 移出关键路径（已实施）
+The fifth batch of data makes the problem very clear:
 
-第五批数据把问题指得很清楚：
-
-| 批次 | `verify` | 其余阶段合计 | E2E | 吞吐 |
+| Batch | `verify` | Total of other stages | E2E | Throughput |
 | --- | ---: | ---: | ---: | ---: |
-| 第三批 | 14.8s | 12.2s | 27.0s | 10.75 |
-| 第四批 | 20.3s | 11.1s | 31.4s | 12.88 |
-| 第五批 | **56.1s** | **11.1s** | 67.2s | 7.73 |
+| Third batch | 14.8s | 12.2s | 27.0s | 10.75 |
+| Fourth batch | 20.3s | 11.1s | 31.4s | 12.88 |
+| Fifth batch | **56.1s** | **11.1s** | 67.2s | 7.73 |
 
-- 网关侧（`register` / `login` / `session` / `validate` / `enroll`）三批几乎不变，
-  合计 **11~12s**；
-- `verify` 在 14.8s → 56.1s 之间剧烈波动，是唯一的不确定性来源；
-- 而且它**不影响额度**：第五批 14 个验证超时账号最终全部拿到 200（延迟复探补齐）。
+- The gateway side (`register` / `login` / `session` / `validate` / `enroll`) is nearly unchanged across the three batches, totaling **11~12s**;
+- `verify` fluctuates wildly between 14.8s and 56.1s and is the only source of uncertainty;
+- Moreover, it **does not affect quota**: all 14 accounts that timed out on verification in the fifth batch ultimately got 200 (filled in by delayed re-probing).
 
-### 方案
+### Approach
 
-入池不等待验证，验证在后台继续：
+Do not wait for verification when entering the pool; verification continues in the background:
 
 ```text
-现在:  mailbox → register → login → session → validate ─┐
-                              verify (阻塞 join) ────────┴→ enroll
-改后:  mailbox → register → login → session → validate → enroll
-                              verify (后台) ────────────────→ 成功后回填
+Now:    mailbox → register → login → session → validate ─┐
+                              verify (blocking join) ──────┴→ enroll
+After:  mailbox → register → login → session → validate → enroll
+                              verify (background) ──────────→ backfill on success
 ```
 
-- `enroll` 携带 `email_verified=false`（当前上游不禁用）；
-- 后台验证成功后，通过管理接口回填该账号的 `email_verified=true`；
-- 需要一个新的后台任务池 ＋ 一条 `action=mark-verified`；
-- 延迟等待窗口可以缩短到 45s（晚到的邮件不再需要等，因为额度不依赖它）。
+- `enroll` carries `email_verified=false` (currently not disabled upstream);
+- After background verification succeeds, backfill the account's `email_verified=true` via the admin interface;
+- Requires a new background task pool + an `action=mark-verified`;
+- The delayed wait window can be shortened to 45s (late-arriving emails no longer need to be waited for, since quota does not depend on them).
 
-### 实测结果（已实施）
+### Measured Results (Implemented)
 
-| 指标 | 第五批（阻塞验证） | 第六批（P0-4） | 预测 |
+| Metric | Fifth batch (blocking verification) | Sixth batch (P0-4) | Predicted |
 | --- | ---: | ---: | ---: |
-| 单号 E2E 中位 | 52.5s | **12.3s** | ~11s |
-| 单号 E2E 均值（成功账号） | 67.2s | **12.6s** | — |
-| p90 / 最小 | 107.6s / 36.4s | 15.6s / **9.1s** | — |
-| 后台验证回填 | — | **33/34** | — |
-| 推算吞吐（并发 10） | 7.73 号/分 | **~49 号/分** | ~45 |
+| Median per-account E2E | 52.5s | **12.3s** | ~11s |
+| Mean per-account E2E (successful accounts) | 67.2s | **12.6s** | - |
+| p90 / min | 107.6s / 36.4s | 15.6s / **9.1s** | - |
+| Background verification backfill | - | **33/34** | - |
+| Estimated throughput (concurrency 10) | 7.73 accounts/min | **~49 accounts/min** | ~45 |
 
-20 号确认批次（并发 10）复核：19/20 成功，中位 E2E **11.9s**，
-后台验证 18/19 回填成功 —— 与第一批一致。
+Re-check with a 20-account confirmation batch (concurrency 10): 19/20 succeeded, median E2E **11.9s**, background verification backfilled 18/19 - consistent with the first batch.
 
-实现要点：
+Implementation highlights:
 
-- `Enroller` 新增可选接口 `VerifiedMarker`（`MarkVerified(ctx, accountID, email)`）；
-- 入池后 `verifyBackfill` 在**脱离调用方 ctx** 的后台 goroutine 里继续等邮件，
-  成功后点链接、写一条新台账（Merge 把 `verify` 从 `pending` 更新为 `ok`）、
-  再调 `MarkVerified` 回填号池；
-- 所有后台写入都作用在**记录副本**上，避免与 `finish()`/`notify()` 竞争；
-- 唯一仍同步等待的场景：`/theos` 返回 `email_unverified`。
-- 管理接口新增 `action=mark-verified`（按 id，缺失时按邮箱回退，幂等）。
+- `Enroller` gains a new optional interface `VerifiedMarker` (`MarkVerified(ctx, accountID, email)`);
+- After entering the pool, `verifyBackfill` continues waiting for the email in a background goroutine **detached from the caller's ctx**; on success it clicks the link, writes a new ledger entry (Merge updates `verify` from `pending` to `ok`), then calls `MarkVerified` to backfill the account pool;
+- All background writes operate on **record copies** to avoid racing with `finish()`/`notify()`;
+- The only scenario that still waits synchronously: `/theos` returns `email_unverified`.
+- The admin interface gains `action=mark-verified` (by id, falling back to email when missing, idempotent).
 
-### 已修复：注册 POST 超时不重试（第六批暴露）
+### Fixed: Registration POST Timeout Not Retried (Exposed by Sixth Batch)
 
 ```text
 POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeout
 ```
 
-三处改动：
+Three changes:
 
-1. **45s 总预算**：`registerPostBudget` 包住注册 POST，失败快速返回
-   （原来 3 次内部重试 × 60s 客户端超时 ≈ 190s 才判死）；
-2. **退避可被 ctx 打断**：`do()` 里两处 `time.Sleep` 换成 `sleepCtx`，
-   否则 ctx 已经超时还要把 700ms/1400ms 睡完，预算形同虚设；
-3. **登录兜底**：注册 POST 失败（非「已注册」）时用同一邮箱密码登录一次 ——
-   504 往往意味着账号**其实已建成**，登录成功即继续，天然幂等。
+1. **45s total budget**: `registerPostBudget` wraps the registration POST, failing fast (previously 3 internal retries × 60s client timeout ≈ 190s before declaring failure);
+2. **Backoff can be interrupted by ctx**: the two `time.Sleep` calls in `do()` are replaced with `sleepCtx`; otherwise, even after ctx has already timed out, it would still sleep through 700ms/1400ms, rendering the budget meaningless;
+3. **Login fallback**: when the registration POST fails (other than "already registered"), log in once with the same email and password - a 504 often means the account **has actually been created**, so a successful login continues, naturally idempotent.
 
-第七批实测（并发 10）：**50/50 入池、0 失败、墙钟 82s**，
-单号 E2E 中位 **11.7s**，吞吐 **36.6 号/分**（预测 ~45，差在 76% 利用率）。
+Seventh batch measured (concurrency 10): **50/50 entered the pool, 0 failures, wall clock 82s**, median per-account E2E **11.7s**, throughput **36.6 accounts/min** (predicted ~45, the gap being 76% utilization).
 
-### 已修复：CLI 退出会杀掉后台验证
+### Fixed: CLI Exit Kills Background Verification
 
-后台验证跑在 CLI 进程里，批次结束即被带走，导致号池里的 `email_verified`
-不准（第六批只有 11/50 回填）。新增：
+Background verification runs inside the CLI process and is terminated when the batch ends, causing `email_verified` in the account pool to be inaccurate (only 11/50 backfilled in the sixth batch). Added:
 
-- `-verify-grace`（默认 60s）：批次结束后最多等这么久；
-- `Pipeline.PendingVerify()` / `WaitVerify(d)`：`WaitGroup.Add` 放在起
-  goroutine **之前**，避免与 `Wait` 竞争；
-- 等待结束后从台账重新读一遍记录，汇总与交付物才反映真实验证状态。
+- `-verify-grace` (default 60s): wait at most this long after the batch ends;
+- `Pipeline.PendingVerify()` / `WaitVerify(d)`: `WaitGroup.Add` is placed **before** starting the goroutine to avoid racing with `Wait`;
+- After the wait ends, re-read records from the ledger so that summaries and deliverables reflect the true verification state.
 
-验证：5 号小批 `等待 5 个后台邮箱验证（最多 1m0s）…` → `邮箱已验证 5`。
+Verification: a small batch of 5 accounts goes from `waiting for 5 background email verifications (up to 1m0s)…` to `5 emails verified`.
 
-### 历史遗留：注册 POST 没有重试
+### Legacy Issue: Registration POST Has No Retry
 
-第六批 16/50、确认批次 1/20 卡在同一处：
+The sixth batch (16/50) and the confirmation batch (1/20) got stuck at the same place:
 
 ```text
 POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeout
 ```
 
-- 单个账号要白等 188~219s（客户端超时 + 内部重试），把墙钟从 ~60s 拖到 430s；
-- 该调用目前**没有任何重试**，且失败即判死（`register` 阶段 failed）；
-- 修法：对瞬时错误退避重试一次（1~3s）；若上游返回「已注册」，
-  走已有的 `isAlreadyRegistered` 分支转登录，天然幂等。
+- A single account wastes 188~219s (client timeout + internal retries), dragging the wall clock from ~60s to 430s;
+- This call currently has **no retries at all**, and failure is fatal (the `register` stage is marked failed);
+- Fix: back off and retry once on transient errors (1~3s); if upstream returns "already registered", take the existing `isAlreadyRegistered` branch to switch to login, naturally idempotent.
 
-预计收益：失败率 32% → <5%，且批次墙钟不再被单个超时账号拖长。
+Expected benefit: failure rate 32% → <5%, and the batch wall clock is no longer dragged out by a single timed-out account.
 
-风险与缓解：
+Risks and mitigations:
 
-- 若上游将来把「邮箱未验证」作为额度或推理前置条件，这条改动会失效
-  —— 用`email_verified` 的比例做告警即可提前发现；
-- 后台验证需要幂等：同号重复点链接无副作用，回填按邮箱去重。
+- If upstream later makes "email unverified" a prerequisite for quota or inference, this change will break - an alert on the proportion of `email_verified` will surface this early;
+- Background verification must be idempotent: clicking the link repeatedly for the same account has no side effects, and backfill is deduplicated by email.
+## 11. Verifying the Upstream Cost of Clicks (HAR Measurement)
 
-## 11. 验证点击的上游成本（HAR 实测）
+`deepai.org-2.har` (17:07 local time, one manual browser verification) gives the endpoint profile:
 
-`deepai.org-2.har`（17:07 本地，浏览器手动验证一次）给出端点画像：
-
-| 指标 | 值 |
+| Metric | Value |
 | --- | --- |
-| 请求 | `GET https://api.deepai.org/verify_email?key=<uuid>` |
-| 响应 | `200 text/html`，server `nginx + Phusion Passenger` |
-| `wait`（服务端处理） | **13.2 s** |
+| Request | `GET https://api.deepai.org/verify_email?key=<uuid>` |
+| Response | `200 text/html`, server `nginx + Phusion Passenger` |
+| `wait` (server-side processing) | **13.2 s** |
 | ssl/connect / receive | 0.37 s / 0.33 s |
-| 合计 | **13.9 s** |
+| Total | **13.9 s** |
 
-同文件里 `/daily-time-sync/user/` 的字段只有
-`pk / username / email / userprofile.api_key / userprofile2.plan / …`，
-**没有 email-verified 字段** —— 上游不提供可轮询的验证状态。
+In the same file, the fields under `/daily-time-sync/user/` are only
+`pk / username / email / userprofile.api_key / userprofile2.plan / …`,
+**with no email-verified field** - the upstream does not provide a pollable verification status.
 
-结论：这个端点「能用但很贵」，并发点必然触发 Passenger worker 超时（502
-`Incomplete response received from application`）。因此必须限流（当前：全局 2 并发，
-退避 2s/10s/60s），并且**不要把它放进关键路径**（P0-4 已经移出）。
+Conclusion: this endpoint "works but is expensive," and concurrent requests will inevitably trigger Passenger worker timeouts (502
+`Incomplete response received from application`). Therefore rate limiting is mandatory (currently: 2 concurrent globally,
+backoff 2s/10s/60s), and **do not put it on the critical path** (already removed in P0-4).
 
-补齐能力：`register -reverify [-group <分组>]`，从收件箱重取链接 → 限流点击 →
-回填 `email_verified`。`stress-50i` / `stress-50j` / `stress-50k` 均实测补齐到 100%。
+Backfill capability: `register -reverify [-group <group>]`, re-fetch the link from the inbox → rate-limited click →
+backfill `email_verified`. `stress-50i` / `stress-50j` / `stress-50k` all measured backfill to 100%.
 
-**边界**：临时邮箱里的验证邮件只保留很短时间。批次结束几分钟内补还行，
-几小时后收件箱已空 —— 第七批 39 个未验证账号事后补验证全部超时（25s 内无邮件）。
-所以正确做法是**批次内完成验证**（限流就是为此），而不是事后补救。
+**Boundary**: verification emails in temporary inboxes are retained for only a very short time. Backfilling within a few minutes after a batch ends still works,
+but after a few hours the inbox is already empty - all 39 unverified accounts in the seventh batch timed out when backfilled afterward (no email within 25s).
+So the correct approach is to **complete verification within the batch** (rate limiting exists precisely for this), not to remediate afterward.
+## 12. Batch Stability Observations (Batches 6-10)
 
-## 12. 批次稳定性观察（第 6–10 批）
+> This section serves only as a **regression baseline**: see `docs/lessons.md` §4 for the measurement methodology and reading conventions.
 
-> 本节只作为**回归基线**：口径与读数方法见 `docs/lessons.md` §4。
-
-| 批次 | 并发 | 墙钟 | 入池 | E2E 中位 | p90 | 备注 |
+| Batch | Concurrency | Wall Clock | Pooled | E2E Median | p90 | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 6 | 10 | 430s | 34/50 | 12.3s | 15.6s | 注册 POST 504，无重试 |
-| 7 | 10 | 82s | 50/50 | 11.7s | 19.1s | 修复后基线 |
-| 8 | 10 | 228s | 50/50 | **11.9s** | 89.2s | 上游整体变慢（verify 端点故障） |
-| 9 | 10 | 126s | 50/50 | **8.9s** | 13.4s | 验证限流后，验证/额度均 50/50 |
-| 10 | 10 | 124s | 50/50 | **10.3s** | 13.8s | 配置未变，稳定复现 |
+| 6 | 10 | 430s | 34/50 | 12.3s | 15.6s | Registration POST 504, no retries |
+| 7 | 10 | 82s | 50/50 | 11.7s | 19.1s | Baseline after the fix |
+| 8 | 10 | 228s | 50/50 | **11.9s** | 89.2s | Upstream slowed overall (verify endpoint failure) |
+| 9 | 10 | 126s | 50/50 | **8.9s** | 13.4s | After verification rate limiting, verification/quota both 50/50 |
+| 10 | 10 | 124s | 50/50 | **10.3s** | 13.8s | Config unchanged, stably reproduced |
 
-结论：
+Conclusions:
 
-- **单号中位 E2E 稳定在 8.9~12.3s** —— 关键路径已经与上游波动解耦；
-  第九批（验证限流 + 上游正常）做到 8.9s / 45.5 号/分，是当前的口径上限；
-- 上游变慢时，`register` / `login` / `session` / `validate` 会同步变慢
-  （第八批分别 6.6 / 4.2 / 3.0 / 6.7s，是第七批的 2~5 倍），表现为 p90 拉长；
-- 验证是唯一会被上游端点故障整体打断的环节（第八批 0/50），但它不在关键路径、
-  也不影响额度，属于可接受的降级。
+- **Per-order median E2E holds steady at 8.9-12.3s** - the critical path is now decoupled from upstream fluctuations;
+ Batch 9 (verification rate limiting + normal upstream) achieved 8.9s / 45.5 orders/min, the current upper bound for this methodology;
+- When upstream slows down, `register` / `login` / `session` / `validate` slow down in tandem
+ (6.6 / 4.2 / 3.0 / 6.7s respectively in Batch 8, 2-5× those of Batch 7), manifesting as an elongated p90;
+- Verification is the only step that can be interrupted entirely by an upstream endpoint failure (0/50 in Batch 8), but it is not on the critical path
+ and does not affect quota, so this is an acceptable degradation.
+## 13. What Not to Do
 
-## 13. 不建议做的事
+- **Do not remove `validate` to speed things up**: it determines whether an account is usable. Saving 3.1s in exchange for a bunch of
+ zero-quota accounts is effectively pushing the cost to runtime.
+- **Do not change `enroll` to a batch interface**: pool entry is the only write entry point for the state file,
+ and batching increases rollback difficulty; the real cost of `enroll` is only 2.0s, and it is even lower after P0-1.
+- **Do not mask per-account latency by increasing concurrency**: there are only 12 egress routes, and concurrency above 20 starts queueing,
+ which manifests as a p95 spike rather than a throughput improvement.
+## 14. Per-Account In-Flight Cap Comparison Load Test (2026-11-09)
 
-- **不要为提速去掉 `validate`**：它决定了账号能不能用，省 3.1s 换来一堆
-  0 额度账号，等于把成本推到运行时。
-- **不要把 `enroll` 改成批量接口**：入池是状态文件的唯一写入口，
-  批量会放大回滚难度；`enroll` 真实成本只有 2.0s，且 P0-1 后更低。
-- **不要靠提高并发掩盖单号耗时**：出口只有 12 条，并发 20 以上会开始排队，
-  表现是 p95 暴涨而不是吞吐提升。
+**Problem**: The pool concurrency limit = `account count × maxInFlightPerAccount`, where the latter is a compile-time constant (`internal/server/common.go:132`, default **2**). 14 accounts = 28 slots, but **with client concurrency of 28 the success rate is only 48-70%**: when slots run out, the gateway doesn't queue - it switches accounts and retries, and once the retry budget (`max_retries`, default 3) is exhausted it immediately returns `429 rate_limit_error` (`All accounts are at capacity, please try again later`).
 
-## 14. 单账号在途上限对照压测（2026-11-09）
+This round is measurement only, to decide whether bumping the constant from 2 → 3 is worth it, and which path is more cost-effective: "add accounts / tweak settings / change code".
 
-**问题**：号池并发上限 = `账号数 × maxInFlightPerAccount`，后者是编译期常量
-（`internal/server/common.go:132`，默认 **2**）。14 个号 = 28 个槽位，但**客户端
-并发 28 时成功率只有 48~70%**：槽位不够时网关不会排队，而是换号重试，重试预算
-（`max_retries`，默认 3）用尽就秒回 `429 rate_limit_error`（`所有账号并发已满，请稍后重试`）。
+### Method and Definitions
 
-这轮只做测量，用来决定「常量 2 → 3」值不值，以及「加号 / 调设置 / 改代码」哪条路更划算。
+- Pool of **14 accounts** (`/health`: `accounts=14 ready=14`), model `glm-5.3-flash` (`theosPerRequest=0`, does not consume Theos), `stream=false`, `max_tokens=16`, with one system message;
+- Client uses fixed concurrency `C` and total requests `N` (about 2 requests per concurrency slot, ensuring two full waves);
+- Metrics: `ok` = 200; `429` counted separately, and only `error.type=rate_limit_error` is counted - this **is the gateway's own backpressure**, not upstream `409 session_busy` (which waits and retries internally, manifesting only as increased latency);
+- `cap=3` variant: temporarily change the constant to 3, build a separate binary, **immediately `git checkout` to restore**, leaving no changes in the repo; the two rounds run **alternately** (cap2→cap3, then cap3→cap2) to cancel out upstream time-of-day drift;
+- Restart the gateway between rounds (swap binary + reset round-robin cursor), use a copy of the state file, leave the real account pool untouched.
 
-### 方法与口径
+### 14.1 cap = 2 (current: 28 slots)
 
-- 池子 **14 个号**（`/health`：`accounts=14 ready=14`），模型 `glm-5.3-flash`
-  （`theosPerRequest=0`，不消耗 Theos），`stream=false`、`max_tokens=16`、带一条 system；
-- 客户端固定并发 `C`、总请求 `N`（约 2 个请求/并发位，保证能跑满两波）；
-- 统计口径：`ok` = 200；`429` 单独计，且只统计 `error.type=rate_limit_error`
-  —— 它**是网关自己的背压**，不是上游 `409 session_busy`（那条会内部等待重试，
-  只表现为延迟变长）；
-- `cap=3` 变体：临时把常量改成 3、编成独立二进制，**立刻 `git checkout` 还原**，
-  仓库不留改动；两轮**交替**跑（cap2→cap3，再 cap3→cap2），抵消上游时段漂移；
-- 每轮之间重启网关（换二进制 + 复位轮询游标），状态文件用副本，真实号池不动。
-
-### 14.1 cap = 2（现状：28 槽位）
-
-| 客户端并发 | 请求 | 成功 | 429(容量) | 墙钟 | 成功率 | P50 | P95 |
+| Client concurrency | Requests | Success | 429 (capacity) | Wall clock | Success rate | P50 | P95 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 14 | 42 | 42 | 0 | 7.0s | **100%** | 1.18s | 3.97s |
 | 20 | 40 | 40 | 0 | 5.1s | **100%** | 2.34s | 4.29s |
@@ -430,55 +389,49 @@ POST https://api.deepai.org/daily-time-sync/registration/ → 504 Gateway Timeou
 | 28 | 56 | 39 | 17 | 6.5s | 70% | 2.65s | 5.50s |
 | 28 | 56 | 27 | 29 | 19.5s | 48% | 0.36s | 5.37s |
 
-> 最后两行是同配置的两轮，差别来自上游时段（第二轮墙钟 19.5s，明显更慢）；
-> 两轮都出现了成规模拒绝，说明饱和不是偶发。
+> The last two rows are two rounds of the same config; the difference comes from upstream time-of-day (the second round's wall clock of 19.5s is clearly slower); both rounds show large-scale rejections, indicating saturation is not incidental.
 
-### 14.2 cap = 3（42 槽位）
+### 14.2 cap = 3 (42 slots)
 
-| 客户端并发 | 请求 | 成功 | 429 | 墙钟 | 成功率 | P50 | P95 |
+| Client concurrency | Requests | Success | 429 | Wall clock | Success rate | P50 | P95 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 28 | 56 | **56** | 0 | 7.7s | **100%** | 2.09s | 5.65s |
 | 28 | 56 | **56** | 0 | 11.7s | **100%** | 2.70s | 9.42s |
 
-### 14.3 只改设置：`max_retries 3 → 16`（不动代码）
+### 14.3 Settings-only change: `max_retries 3 → 16` (no code change)
 
-| 客户端并发 | 请求 | 成功 | 429 | 墙钟 | 成功率 | P50 |
+| Client concurrency | Requests | Success | 429 | Wall clock | Success rate | P50 |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 28 | 56 | 26 | 30 | 6.0s | 46% | **30ms** |
 | 28 | 56 | 26 | 30 | 4.7s | 46% | 28ms |
 
-> ⚠ 上表是**改造前**的基线。2026-11-09 之后调度侧已改为「扫一圈号池 + 有界排队
-> 2s」而不是「贪心 3 次就 429」，409 也会立即换号 —— 用本节脚本复测时 429 应基本
-> 消失；成功率的提升主要来自这两项改动，而不是把常量从 2 调到 3。
+> ⚠ The table above is the **pre-refactor** baseline. After 2026-11-09 the scheduling side has been changed to "scan the whole pool + bounded queueing for 2s" instead of "greedy 3 tries then 429", and 409 also switches accounts immediately - when re-testing with the scripts in this section, 429s should largely disappear; the success-rate improvement comes mainly from these two changes, not from bumping the constant from 2 to 3.
 
-### 14.4 结论
+### 14.4 Conclusion
 
-1. **cap 2 的有效并发不是 28，而是 ~20**（≈1.4 条/号）：24 开始漏，28 只剩 48~70%；
-2. **cap 3 在 28 并发下零拒绝**（两轮 56/56），P95 与 cap 2 同量级——涨的是容量，不是延迟；
-3. **调 `max_retries` 没用**（46%，且 429 的 P50 只有 30ms）：429 是槽位不够，
-   被拒的请求在几十毫秒内就把重试预算烧完。这是纯容量问题，不是重试策略问题；
-4. 28 并发下 cap2 打不满 28 个理论槽位，代码路径上有两个放大器：
-   - `acquireAccount` 失败也算一次重试预算（`common.go:227` 的 `continue`），
-     饱和时贪心选号只试 `max_retries` 个号就放弃；
-   - 槽位在 handler 返回时才归还（`releaseBody`），客户端拿到响应立刻发下一个请求时，
-     会撞上「响应已收到、槽位未归位」的窗口。
-   所以对客户端的要求是：**遇到 `429 rate_limit_error` 立即退避**，重试风暴只会放大拒绝。
+1. **The effective concurrency of cap 2 is not 28, but ~20** (≈1.4 per account): it starts leaking at 24, and at 28 only 48-70% remain;
+2. **cap 3 has zero rejections at 28 concurrency** (two rounds of 56/56), with P95 in the same order of magnitude as cap 2 - what increases is capacity, not latency;
+3. **Tuning `max_retries` doesn't help** (46%, and the P50 of 429s is only 30ms): 429 means insufficient slots, and rejected requests burn through the retry budget within tens of milliseconds. This is a pure capacity problem, not a retry-policy problem;
+4. At 28 concurrency, cap2 cannot fill the theoretical 28 slots; there are two amplifiers in the code path:
+ - A failed `acquireAccount` also counts against the retry budget (the `continue` at `common.go:227`); under saturation, greedy account selection gives up after trying only `max_retries` accounts;
+ - Slots are returned only when the handler returns (`releaseBody`); when the client sends the next request immediately upon receiving a response, it hits the window of "response received, slot not yet returned".
+ So the requirement for clients is: **back off immediately on `429 rate_limit_error`**; a retry storm only amplifies rejections.
 
-按目标并发选杠杆：
+Choose the lever by target concurrency:
 
-| 目标并发 | 做法 |
+| Target concurrency | Approach |
 | --- | --- |
-| ≤ 20 | 不用改（cap 2 已足够） |
-| 24 ~ 28 | 常量 `maxInFlightPerAccount 2 → 3`（需重编），实测零拒绝 |
-| > 28 | **加号**（每号 +2 槽位）比继续抬常量稳：上游单号容量（`409 session_busy`）才是硬约束 |
+| ≤ 20 | No change needed (cap 2 is sufficient) |
+| 24 ~ 28 | Constant `maxInFlightPerAccount 2 → 3` (requires rebuild), measured zero rejections |
+| > 28 | **Add accounts** (+2 slots per account) is more stable than continuing to raise the constant: upstream per-account capacity (`409 session_busy`) is the hard constraint |
 
-### 14.5 复现
+### 14.5 Reproduction
 
-两个脚本，`scripts/` 下可直接跑（需先按 §1 的方式把网关跑起来，真实号池建议用副本）。
+Two scripts, runnable directly under `scripts/` (you must first start the gateway as in §1; a copy is recommended for the real account pool).
 
 ```js
-// scripts/ab-load.mjs — 固定并发压测，输出一行 JSON
-// 用法: BASE=http://127.0.0.1:10087 KEY=sk-... CONC=28 TOTAL=56 node scripts/ab-load.mjs
+// scripts/ab-load.mjs — fixed-concurrency load test, outputs one line of JSON
+// Usage: BASE=http://127.0.0.1:10087 KEY=sk-... CONC=28 TOTAL=56 node scripts/ab-load.mjs
 const BASE = process.env.BASE || 'http://127.0.0.1:10087';
 const KEY = process.env.KEY;
 const CONC = Number(process.env.CONC || 28);
@@ -541,26 +494,26 @@ console.log(JSON.stringify({
 
 ```bash
 #!/usr/bin/env bash
-# scripts/ab-arm.sh — 起网关 → 建临时 Key → 压测 → 停网关（一轮）
-# 用法: CONC=28 TOTAL=56 ./scripts/ab-arm.sh ./bin/deepaicode2api
+# scripts/ab-arm.sh — start gateway → create temp Key → load test → stop gateway (one round)
+# Usage: CONC=28 TOTAL=56 ./scripts/ab-arm.sh ./bin/deepaicode2api
 set -euo pipefail
-BIN=${1:?用法: ab-arm.sh <binary>}
+BIN=${1:?Usage: ab-arm.sh <binary>}
 WORK=$(mktemp -d)
-cp deepaicode2api-data.json "$WORK/state.json"    # 副本：不动真实号池
+cp deepaicode2api-data.json "$WORK/state.json"    # copy: leave the real account pool untouched
 "$BIN" -data "$WORK/state.json" -port 10087 >"$WORK/gw.log" 2>&1 &
 GW=$!
 trap 'kill $GW 2>/dev/null || true; rm -rf "$WORK"' EXIT
 until curl -sf -m1 -o /dev/null http://127.0.0.1:10087/healthz; do sleep 0.5; done
 KEY=$(curl -sS -X POST -H 'Content-Type: application/json' -d '{"name":"ab","group":""}' \
   http://127.0.0.1:10087/admin/api/keys | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')
-# 只测 max_retries 时，在这里插一句（不需要重编）：
+# When testing only max_retries, insert this line here (no rebuild needed):
 # curl -sS -X POST -H 'Content-Type: application/json' -d '{"max_retries":16}' \
 #   http://127.0.0.1:10087/admin/api/settings >/dev/null
 BASE=http://127.0.0.1:10087 KEY="$KEY" CONC=${CONC:-28} TOTAL=${TOTAL:-56} node scripts/ab-load.mjs
 ```
 
 ```bash
-# cap=3 变体：临时改常量 → 编独立二进制 → 立刻还原（仓库不留改动）
+# cap=3 variant: temporarily change the constant → build a separate binary → restore immediately (no changes left in the repo)
 python - <<'PY'
 p='internal/server/common.go'
 s=open(p, encoding='utf-8').read()
@@ -569,7 +522,7 @@ open(p,'w',encoding='utf-8',newline='').write(s.replace(
 PY
 go build -o /tmp/gw-cap3 . && git checkout -- internal/server/common.go
 go build -o /tmp/gw-cap2 .
-git status --short        # 应为空
+git status --short        # should be empty
 ```
 
-复跑时按「cap2 → cap3 → cap3 → cap2」交替，每轮 `CONC=28 TOTAL=56`，取成功率与 P95 对照。
+When re-running, alternate "cap2 → cap3 → cap3 → cap2", with `CONC=28 TOTAL=56` each round, and compare success rate and P95.
