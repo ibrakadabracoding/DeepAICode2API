@@ -1,96 +1,95 @@
-# 本项目的 pi-lens 配置
+# pi-lens configuration for this project
 
-仓库根目录的 `.pi-lens.json` 是本项目的 **pi-lens**（编码期诊断工具）配置。
-它不参与编译、也不进二进制，只影响人与 AI 在本仓里写代码时看到的诊断噪音。
+The `.pi-lens.json` in the repository root is this project's **pi-lens** (coding-time diagnostic tool) configuration.
+It does not participate in compilation and is not included in the binary; it only affects the diagnostic noise that humans and AI see when writing code in this repository.
 
-pi-lens 的配置分两层：**项目级** `.pi-lens.json`（本文件所在仓库，可提交、可 review）
-与**机器级** `~/.pi-lens/config.json`（每个人自己的）。本仓只提供项目级，
-不替使用者决定机器上装什么工具。
+pi-lens configuration has two layers: **project-level** `.pi-lens.json` (in the repository where this file resides, committable and reviewable)
+and **machine-level** `~/.pi-lens/config.json` (each person's own). This repository only provides the project-level one
+and does not decide for users what tools to install on their machines.
 
-## 为什么需要它
+## Why it is needed
 
-此前本仓没有任何 pi-lens 配置，于是它按默认值跑：
+Previously this repository had no pi-lens configuration, so it ran with defaults:
 
-| 现象 | 根因 | 处理 |
+| Symptom | Root cause | Handling |
 | --- | --- | --- |
-| 每个会话几十条 `spawn failure classified: tool-not-found` | `typos` / `vale` / `markdownlint` / `yamllint` / `bash-language-server` / `vscode-css|html-language-server` / `docker-langserver` / `yaml-language-server` 都没装（本仓刻意零工具链） | 关掉对应 runner / server（见下） |
-| 中文长文被拼写/散文检查反复扫 | `README.md`（47KB）与 `docs/*.md`（300KB+）是中文技术长文 | 关掉 `typos` / `vale` / `markdownlint` |
-| 合法写法被报 | `waitgroup-done-scope` 把 `ctx.Done()` 当成 `WaitGroup.Done()`；`nil-map-assignment` 看不到 `json.Unmarshal(&m)` 会分配；Semgrep XSS 规则针对 HTML，而网关写的是 JSON / SSE | 关掉前两条规则；第三条改成走统一的 `writeRawJSON`（顺带消掉重复的响应头拼装） |
-| 复杂度告警长期挂着 | `openModel` 是已知的调度状态机（cc 39），拆分需要单独设计 | 阈值 15 → 25，并对该文件单独豁免（其余新代码仍受 25 约束） |
+| Dozens of `spawn failure classified: tool-not-found` per session | `typos` / `vale` / `markdownlint` / `yamllint` / `bash-language-server` / `vscode-css\|html-language-server` / `docker-langserver` / `yaml-language-server` are all not installed (this repository deliberately has zero toolchain) | Disable the corresponding runner / server (see below) |
+| Long Chinese documents repeatedly scanned by spelling/prose checks | `README.md` (47KB) and `docs/*.md` (300KB+) are long Chinese technical documents | Disable `typos` / `vale` / `markdownlint` |
+| Valid code reported | `waitgroup-done-scope` treats `ctx.Done()` as `WaitGroup.Done()`; `nil-map-assignment` does not see that `json.Unmarshal(&m)` allocates; the Semgrep XSS rule targets HTML, while the gateway writes JSON / SSE | Disable the first two rules; change the third to go through the unified `writeRawJSON` (which also eliminates duplicated response header assembly) |
+| Complexity warnings persist | `openModel` is a known scheduling state machine (cc 39), and splitting it requires separate design | Threshold 15 → 25, with a separate exemption for that file (other new code is still bound by 25) |
 
-## 配置在做什么
+## What the configuration does
 
-### 扫描范围（`ignore`）
+### Scan scope (`ignore`)
 
-运行期状态与构建产物不进索引：`dist/`、`bin/`、`exports/`、`coverage.out`、
-`*.out`、`.env*`、`deepaicode2api-data*.json*`、`*.jsonl`、`*.bak`。
-其中状态文件与台账**含上游 Key / 密码**，本就不该被任何工具读进索引。
+Runtime state and build artifacts are not indexed: `dist/`, `bin/`, `exports/`, `coverage.out`,
+`*.out`, `.env*`, `deepaicode2api-data*.json*`, `*.jsonl`, `*.bak`.
+The state files and ledgers **contain upstream keys / passwords** and should never be read into the index by any tool.
 
-### 关掉的 LSP / runner
+### Disabled LSP / runners
 
-- `lsp.disabledServers`：`bash`、`css`、`docker`、`html`、`python`、`typos`、`yaml`
-  —— 这些语言的 server 在本机/本仓均未安装，启用只会每会话刷 `tool-not-found`。
-  **代价**：这些文件会显示为 *unconfirmed*（无法确认干净），而不是 *clean*。
-- `dispatch.disabledRunners`：`vale`、`markdownlint`、`yamllint`
-  —— 中文文档与 YAML 不在本仓质量门禁里（YAML 只有 CI 与 compose 各一份）。
+- `lsp.disabledServers`: `bash`, `css`, `docker`, `html`, `python`, `typos`, `yaml`
+ - the servers for these languages are not installed on this machine/in this repository, and enabling them would only flood each session with `tool-not-found`.
+ **Cost**: these files will show as *unconfirmed* (cannot confirm clean) rather than *clean*.
+- `dispatch.disabledRunners`: `vale`, `markdownlint`, `yamllint`
+ - Chinese documents and YAML are not part of this repository's quality gate (there is only one YAML each for CI and compose).
 
-### 保留的检查
+### Retained checks
 
-Go：`go-vet`、go LSP、tree-sitter、ast-grep、opengrep（Semgrep）、`fact-rules`。
-前端（零构建 ES module）：TypeScript/Deno LSP、`oxlint`、`biome-check-json`、ast-grep。
+Go: `go-vet`, go LSP, tree-sitter, ast-grep, opengrep (Semgrep), `fact-rules`.
+Frontend (zero-build ES module): TypeScript/Deno LSP, `oxlint`, `biome-check-json`, ast-grep.
 
-### 规则策略（`rules`）
+### Rule policy (`rules`)
 
-| 规则 | 策略 | 原因 |
+| Rule | Policy | Reason |
 | --- | --- | --- |
-| `high-complexity` | 阈值 25；`internal/server/upstream.go` 豁免 | 见上表；新代码仍受 25 约束 |
-| `high-fan-out` | 阈值 30 | 默认 20 对「路由 + 装配」风格的 handler 偏严 |
-| `nil-map-assignment` | disable | 规则不追踪 `&m` 的写入，`var m map[…]` + `json.Unmarshal` 是合法写法 |
-| `waitgroup-done-scope` | disable | 规则把 `ctx.Done()` 也当成 `WaitGroup.Done()` |
-| `no-console-except-error-js` | `ignorePaths: js/api.js` | 该处 `console.warn` 是刻意保留的英文界面排障输出 |
-| `no-array-reverse-mutation-js` | `ignorePaths: render/logs.js` | 实际写法是 `list.slice().reverse()`，规则看不穿 `.slice()` |
+| `high-complexity` | Threshold 25; `internal/server/upstream.go` exempted | See the table above; new code is still bound by 25 |
+| `high-fan-out` | Threshold 30 | The default 20 is too strict for "routing + assembly" style handlers |
+| `nil-map-assignment` | disable | The rule does not track writes through `&m`; `var m map[…]` + `json.Unmarshal` is valid code |
+| `waitgroup-done-scope` | disable | The rule treats `ctx.Done()` as `WaitGroup.Done()` as well |
+| `no-console-except-error-js` | `ignorePaths: js/api.js` | The `console.warn` there is a deliberately retained English UI troubleshooting output |
+| `no-array-reverse-mutation-js` | `ignorePaths: render/logs.js` | The actual code is `list.slice().reverse()`, and the rule cannot see through `.slice()` |
 
-真实的写法问题**不靠豁免**，而是直接改代码：本轮据此把 `isFinite` → `Number.isFinite`、
-`!!m.free` → `Boolean(m.free)`，并把上游错误体统一交给 `writeRawJSON`。
+Real code issues are **not handled by exemptions** but by directly changing the code: in this round, `isFinite` → `Number.isFinite`,
+`!!m.free` → `Boolean(m.free)`, and upstream error bodies were unified through `writeRawJSON`.
 
-## 怎么验证配置生效
+## How to verify the configuration takes effect
 
 ```bash
-# 在 pi 里：
+# In pi:
 #   effective_config path=internal/server/upstream.go
-# 期望：documents 含项目 .pi-lens.json、provenanceCounts.project > 0、
-#       recordCounts 为空（有值说明某条目 id 写错了，日志会给出 PILENS_CFG_0005）、
-#       被关掉的 server 显示 disabled-by-config 并指明 key 与 tier。
+# Expect: documents includes the project .pi-lens.json, provenanceCounts.project > 0,
+#         recordCounts is empty (a value means some entry id is wrong; the log will show PILENS_CFG_0005),
+#         disabled servers show disabled-by-config and identify the key and tier.
 
-#   lens_diagnostics path=<目录> scope=paths mode=full source=lsp
-# 期望：被豁免的条目不再出现；输出末尾会写明
-#       "suppressed by disposition: N finding(s) …"（不是"干净"，是"已按策略隐藏"）。
+#   lens_diagnostics path=<directory> scope=paths mode=full source=lsp
+# Expect: exempted entries no longer appear; the end of the output will state
+#         "suppressed by disposition: N finding(s) …" (not "clean", but "hidden by policy").
 ```
 
-改配置后不需要重启：`rules` 与 denial 列表按文件解析，下一次派发即生效。
+No restart is needed after changing the configuration: `rules` and the denial list are parsed per file, and take effect on the next dispatch.
 
-### 状态栏的 `●1E !20W` 是什么
+### What is `●1E !20W` in the status bar
 
-那个徽章读的是**会话缓存**（本次会话里各文件的累计发现），不是「当前代码有 1 个
-错误」。编辑过的文件里，旧行号上的条目会一直挂在缓存里，直到重新扫一次。真实判定
-必须主动探一次：
+That badge reads the **session cache** (cumulative findings for each file in this session), not "the current code has 1
+error". For edited files, entries at old line numbers remain in the cache until a rescan. A real determination
+requires actively probing once:
 
 ```text
-lens_diagnostics mode=full source=lsp scope=paths paths=[<改过的文件…>]
+lens_diagnostics mode=full source=lsp scope=paths paths=[<changed files…>]
 ```
 
-判据是 `Outcomes` 里的 `clean=N` 与 `findings=N`，而不是徽章数字。2026-11-12 实测：
-徽章 `●1E !20W`，对该次发布的 14 个文件做 `mode=full` → `1 warning`（
-`console-smoke.mjs` 里一处 `!!on`，已改 `Boolean(on)`），其余 clean；再探一轮 → `0`。
-剩下的是测试代码的**质量提示**（`time.Sleep` / `context.Background()` /
-`_ = Encode(...)` / `s, _ := newTestServer(...)`），工具把测试当 handler 误判，
-不值得为它们引入封装。
+The criterion is `clean=N` and `findings=N` in `Outcomes`, not the badge number. Measured on 2026-11-12:
+the badge showed `●1E !20W`; running `mode=full` on the 14 files of that release → `1 warning` (a `!!on` in `console-smoke.mjs`, changed to `Boolean(on)`), the rest clean; probing again → `0`.
+What remains are **quality hints** for test code (`time.Sleep` / `context.Background()` /
+`_ = Encode(...)` / `s, _ := newTestServer(...)`); the tool misjudges tests as handlers,
+and it is not worth introducing wrappers for them.
 
-## 什么时候该把这些打开
+## When to turn these back on
 
-- 装上 `typos` / `vale` / `markdownlint` / `yamllint` / `shfmt` 之后：删掉
-  `dispatch.disabledRunners` 里对应条目；
-- 想给控制台的 CSS / HTML 做 LSP 诊断：`npm i -g vscode-langservers-extracted`
-  （提供 css/html/json/eslint server），再从 `lsp.disabledServers` 移除 `css` / `html`；
-- 装了 `golangci-lint` 之后：本仓还需一份 `.golangci.yml` 才会被 pi-lens 选中
-  （它要求「有项目配置」才启用，避免用默认规则集扫出与项目约定不符的问题）。
+- After installing `typos` / `vale` / `markdownlint` / `yamllint` / `shfmt`: remove the corresponding entries from
+ `dispatch.disabledRunners`;
+- To get LSP diagnostics for the console's CSS / HTML: `npm i -g vscode-langservers-extracted`
+ (provides css/html/json/eslint servers), then remove `css` / `html` from `lsp.disabledServers`;
+- After installing `golangci-lint`: this repository also needs a `.golangci.yml` for pi-lens to select it
+ (it requires "a project configuration" to enable, to avoid scanning with the default rule set and reporting issues that conflict with project conventions).
