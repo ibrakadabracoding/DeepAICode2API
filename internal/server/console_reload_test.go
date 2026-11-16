@@ -7,22 +7,23 @@ import (
 	"testing"
 )
 
-// bareRefreshRe 匹配「模块顶层不存在的 refresh( 调用」。
+// bareRefreshRe matches a bare refresh( call that is not a member access.
 //
-// 只认标识符本身：`refreshLogs(` 匹配不到（前面是字母），`obj.refresh(`
-// 也匹配不到（前面是点），这两种在 app.js 里都是合法的。
+// It matches the identifier alone: `refreshLogs(` does not match (preceded by a letter),
+// and neither does `obj.refresh(` (preceded by a dot); both are legal in app.js.
 var bareRefreshRe = regexp.MustCompile(`(^|[^\w.$])refresh\s*\(`)
 
-// TestConsoleModulesUseInjectedReload 守住「刷新只能经 setReload 注入」这条约定。
+// TestConsoleModulesUseInjectedReload guards the convention that "refresh may only be injected via setReload".
 //
-// 背景：app.js 拆分后，刷新函数留在 app.js，下层模块靠 `setReload(fn)` 注入
-// `reload`。拆分时 actions.js 与 render/keys.js 还留着 4 处裸 `refresh()`：
-// accountOp / keyOp / finishCheckin / 「改绑分组」。它们不会在加载时报错，
-// 只在「操作成功后收尾」这一刻抛 `refresh is not a function`——而且被同一个
-// .catch 接住，提示成「失败：refresh is not a function」，看起来像接口失败。
+// Background: after app.js was split, the refresh function stayed in app.js, and lower-level
+// modules receive `reload` via `setReload(fn)`. During the split, actions.js and render/keys.js
+// still had 4 bare `refresh()` calls: accountOp / keyOp / finishCheckin / "rebind group". They
+// don't fail at load time; they throw `refresh is not a function` only at the "wrap-up after a
+// successful operation" moment - and the same.catch catches it, reporting "failed: refresh is
+// not a function", which looks like an API failure.
 //
-// 浏览器里跑不起来才不会挡住 go test，所以这里做成静态契约：
-// actions.js 与 render/*.js 里不允许出现裸 refresh(。
+// A browser-only failure wouldn't block go test, so this is enforced as a static contract:
+// actions.js and render/*.js must not contain a bare refresh(.
 func TestConsoleModulesUseInjectedReload(t *testing.T) {
 	checked := 0
 	for _, name := range web.ScriptNames() {
@@ -40,14 +41,14 @@ func TestConsoleModulesUseInjectedReload(t *testing.T) {
 			t.Errorf("%s:%d 调用了裸 refresh()；下层模块必须用注入的 reload()（见 actions.js setReload）", name, line)
 		}
 	}
-	// 目录结构变了（比如 render/ 被合并）会让这条契约静默失效。
+	// A directory-structure change (e.g. render/ being merged) would silently disable this contract.
 	if checked < 4 {
 		t.Fatalf("只检查到 %d 个模块（actions.js + render/*），断言可能已失效", checked)
 	}
 }
 
-// TestConsoleActionsInjectsReload 确认注入点在 actions.js 里仍然成立：
-// 有 setReload 导出、有默认空实现，且收尾用的是 reload()。
+// TestConsoleActionsInjectsReload confirms the injection point still holds in actions.js:
+// there is a setReload export, a default no-op implementation, and wrap-up uses reload().
 func TestConsoleActionsInjectsReload(t *testing.T) {
 	raw, err := web.Read("web/js/actions.js")
 	if err != nil {
@@ -59,13 +60,13 @@ func TestConsoleActionsInjectsReload(t *testing.T) {
 			t.Errorf("actions.js 里找不到 %q：刷新收尾必须继续走注入的 reload", want)
 		}
 	}
-	// 默认值必须是函数：否则 setReload 之前的调用会抛 TypeError。
+	// The default value must be a function: otherwise calls before setReload throw a TypeError.
 	if !strings.Contains(src, "let reload = function") {
 		t.Error("actions.js 的 reload 默认值必须是可以直接调用的空实现")
 	}
 }
 
-// TestStripJSComments 保证剥离器本身不吃掉真代码，也不把字符串当注释。
+// TestStripJSComments ensures the stripper itself doesn't eat real code or treat strings as comments.
 func TestStripJSComments(t *testing.T) {
 	cases := []struct {
 		name, in, want string

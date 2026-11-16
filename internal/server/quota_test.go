@@ -12,7 +12,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// quotaAccount 构造一个带额度快照的账号。
+// quotaAccount constructs an account with a quota snapshot.
 func quotaAccount(id string, checkedAt int64, refreshAt string) *deepai.Account {
 	a := &deepai.Account{ID: id, Name: id, APIKey: "sk-" + id, Enabled: true}
 	if checkedAt > 0 {
@@ -49,7 +49,7 @@ func TestQuotaNeedsRefresh(t *testing.T) {
 	}
 }
 
-// 分批：单次请求只探 limit 个，并回报 total / probed / remaining。
+// Batching: each request probes only limit accounts and reports total / probed / remaining.
 func TestCheckinBatchesAndReportsRemaining(t *testing.T) {
 	var hits atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +78,7 @@ func TestCheckinBatchesAndReportsRemaining(t *testing.T) {
 		t.Fatalf("第一批上游探测 %d 次，期望 3", got)
 	}
 
-	// 第二批应把没探过的补齐，remaining 归零。
+	// The second batch should fill in the unprobed accounts, and remaining should drop to zero.
 	rec2 := postAdmin(t, s, "/admin/api/checkin", `{"limit":3}`)
 	out2 := decodeJSON[map[string]any](t, rec2.Body.Bytes())
 	if out2["remaining"] != float64(0) {
@@ -92,7 +92,7 @@ func TestCheckinBatchesAndReportsRemaining(t *testing.T) {
 	}
 }
 
-// group / stale_only 过滤：不应把不相关的账号打一遍。
+// group / stale_only filtering: should not hit unrelated accounts.
 func TestCheckinFiltersByGroupAndStaleness(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]int{}
@@ -106,7 +106,7 @@ func TestCheckinFiltersByGroupAndStaleness(t *testing.T) {
 	stale := time.Now().Add(-time.Hour).Unix()
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
-	// g2 的号是陈旧的；g1 一个陈旧、一个刚探过。
+	// The accounts in g2 are stale; in g1, one is stale and one was just probed.
 	s.Store.UpsertAccount(quotaAccount("g1-stale", stale, future))
 	s.Store.UpdateAccount("g1-stale", func(a *deepai.Account) { a.Group = "g1" })
 	s.Store.UpsertAccount(quotaAccount("g1-fresh", time.Now().Unix(), future))
@@ -126,7 +126,7 @@ func TestCheckinFiltersByGroupAndStaleness(t *testing.T) {
 	}
 	mu.Unlock()
 
-	// stale_only 应跳过刚探过的 g1-fresh（但 acc-1 从未探过，会被算进来）。
+	// stale_only should skip g1-fresh, which was just probed (but acc-1 has never been probed and will be included).
 	seen = map[string]int{}
 	rec2 := postAdmin(t, s, "/admin/api/checkin", `{"stale_only":true}`)
 	out2 := decodeJSON[map[string]any](t, rec2.Body.Bytes())
@@ -141,7 +141,7 @@ func TestCheckinFiltersByGroupAndStaleness(t *testing.T) {
 	}
 }
 
-// 同一账号同一时刻只允许一个探测（手动 + 后台 + 按需三路会撞车）。
+// Only one probe is allowed per account at a time (manual + background + on-demand paths can collide).
 func TestProbeBatchDedupesInFlight(t *testing.T) {
 	var hits atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +165,7 @@ func TestProbeBatchDedupesInFlight(t *testing.T) {
 	}
 }
 
-// 后台守护只挑过旧的账号，新鲜的账号不应被重复探测。
+// The background daemon should only pick stale accounts; fresh accounts should not be probed repeatedly.
 func TestReprobeStaleOnlyProbesDueAccounts(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]int{}
@@ -175,7 +175,7 @@ func TestReprobeStaleOnlyProbesDueAccounts(t *testing.T) {
 		mu.Unlock()
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"1.00"}`)
 	})
-	s, _ := newTestServer(t, u) // acc-1：从未探测 → 应被探
+	s, _ := newTestServer(t, u) // acc-1: never probed → should be probed
 	future := time.Now().Add(12 * time.Hour).UTC().Format(time.RFC3339)
 	s.Store.UpsertAccount(quotaAccount("fresh", time.Now().Unix(), future))
 	s.Store.UpdateAccount("fresh", func(a *deepai.Account) { a.Group = "g" })
@@ -195,7 +195,7 @@ func TestReprobeStaleOnlyProbesDueAccounts(t *testing.T) {
 	}
 }
 
-// 推理命中「额度快照已过期」的账号时，应异步补探一次（不阻塞本次请求）。
+// When inference hits an account whose quota snapshot has expired, it should asynchronously re-probe once (without blocking the current request).
 func TestInferenceRefreshesStaleQuota(t *testing.T) {
 	var mu sync.Mutex
 	theosHits := 0
@@ -227,7 +227,7 @@ func TestInferenceRefreshesStaleQuota(t *testing.T) {
 		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
 	}
 
-	// 等异步探测跑完（顺带避免测试结束后还有 goroutine 写临时目录）。
+	// Wait for the asynchronous probe to finish (also avoids goroutines writing to the temp directory after the test ends).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		s.probeMu.Lock()
@@ -253,7 +253,7 @@ func TestInferenceRefreshesStaleQuota(t *testing.T) {
 	}
 }
 
-// 自动复探失败不应把正在服务推理的账号标成 error / 累加 Failures。
+// A failed automatic re-probe should not mark an account serving inference as error / increment Failures.
 func TestProbeAsyncFailureDoesNotMarkAccount(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -281,11 +281,11 @@ func TestProbeAsyncFailureDoesNotMarkAccount(t *testing.T) {
 	}
 }
 
-// TestCheckinSkipsInFlightProbes 守住「已有探测在跑」时的计数语义。
+// TestCheckinSkipsInFlightProbes guards the counting semantics when a probe is already in flight.
 //
-// 以前 probed 直接取 len(batch)，把跳过的一起算成本次探过；而跳过的那一条又被
-// 塞进 settled，于是 remaining 也认为它「已收敛」。结果：控制台报「配额刷新
-// 完成：N 个账号」，其中一部分根本没测；且 remaining 归零后不再重试。
+// Previously, probed was taken directly as len(batch), counting skipped ones as probed this time; and the skipped entry was then
+// placed into settled, so remaining also considered it "converged". Result: the console reported "quota refresh
+// complete: N accounts", some of which were never probed; and after remaining dropped to zero, no more retries.
 func TestCheckinSkipsInFlightProbes(t *testing.T) {
 	var hits atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +294,7 @@ func TestCheckinSkipsInFlightProbes(t *testing.T) {
 	})
 	s, _ := newTestServer(t, u)
 
-	// 占住 acc-1 的探测槽位，模拟「另一路正在探」。
+	// Occupy acc-1's probe slot to simulate "another path is probing".
 	if !s.claimProbe("acc-1") {
 		t.Fatal("占用探测槽位失败")
 	}
@@ -311,7 +311,7 @@ func TestCheckinSkipsInFlightProbes(t *testing.T) {
 	if out["skipped"] != float64(1) {
 		t.Fatalf("skipped = %v，期望 1: %#v", out["skipped"], out)
 	}
-	// 跳过 ≠ 已探过：它仍是未知状态，必须留在 remaining 里等下一批。
+	// Skipped ≠ probed: it is still in an unknown state and must remain in remaining for the next batch.
 	if out["remaining"] != float64(1) {
 		t.Fatalf("remaining = %v，期望 1（跳过不应收敛）", out["remaining"])
 	}

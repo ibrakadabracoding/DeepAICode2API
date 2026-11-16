@@ -7,7 +7,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 后台验证完成后由注册链路回填 email_verified。
+// After background verification completes, the registration flow backfills email_verified.
 func TestMarkVerifiedByID(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpsertAccount(&deepai.Account{ID: "acc-1", Name: "n", APIKey: "sk-1", Email: "a@b.com"})
@@ -20,13 +20,14 @@ func TestMarkVerifiedByID(t *testing.T) {
 		t.Fatalf("未回填 email_verified: %#v", a)
 	}
 
-	// 幂等：重复调用不报错。
+	// Idempotent: repeated calls do not error.
 	if rec := postAdmin(t, s, "/admin/api/accounts", `{"action":"mark-verified","id":"acc-1"}`); rec.Code != http.StatusOK {
 		t.Fatalf("重复调用应幂等，实际 %d", rec.Code)
 	}
 }
 
-// 入池失败但验证成功时只有邮箱可用，按邮箱回退查找。
+// When adding to the pool fails but verification succeeds, only the email is available, so fall back to
+// looking up by email.
 func TestMarkVerifiedByEmailFallback(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpsertAccount(&deepai.Account{ID: "acc-9", Name: "n", APIKey: "sk-9", Email: "fallback@b.com"})

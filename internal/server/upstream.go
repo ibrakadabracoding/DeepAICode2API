@@ -14,23 +14,23 @@ import (
 	"time"
 )
 
-// openModel 在账号池上打开一次上游推理请求。
+// openModel opens one upstream inference request on the account pool.
 //
-// 语义：
-//   - 2xx：立即返回响应，调用方负责关闭 Body；
-//   - 400/404/422 等请求错误：不重试，直接返回 *deepai.HTTPError；
-//   - 401/403/429/5xx：记录账号失败并换号重试；
-//   - 409 session_busy：池里有空号就立刻换号，整池都满才按 Retry-After 等一次；
-//   - 槽位不够：短暂排队（admissionWait），超时才回 429。
+// Semantics:
+// - 2xx: return the response immediately; the caller is responsible for closing Body;
+// - 400/404/422 and other request errors: no retry, return *deepai.HTTPError directly;
+// - 401/403/429/5xx: record the account failure and retry with another account;
+// - 409 session_busy: if the pool has a free account, switch to it immediately; only when the whole pool is full, wait once according to Retry-After;
+// - Not enough slots: queue briefly (admissionWait), and return 429 only on timeout.
 func (s *Server) openModel(ctx context.Context, path string, body []byte, affinity, group, apiKey string, stream bool) (*http.Response, *deepai.Account, error) {
-	// 只需要号池规模：AccountCounts 不解包快照，避免为了一次 len() 深拷贝全池。
+	// Only the pool size is needed: AccountCounts does not unpack the snapshot, avoiding a deep copy of the whole pool for a single len().
 	acctTotal, _ := s.Store.AccountCounts()
 	if acctTotal == 0 {
 		return nil, nil, errors.New("没有可用账号，请先在控制台导入桌面端凭据或添加 API Key")
 	}
 	settings := s.Store.Settings()
-	// 预置桌面端形状：只对「已被上游按形状拒绝过」的调用方生效（shape.go），
-	// 且只补 system、不裁剪字段，因此不会改调用方显式给的采样参数。
+	// Preset desktop shape: only takes effect for callers that have already been rejected by the upstream for their shape (shape.go),
+	// and only fills in system without trimming fields, so it does not alter sampling parameters explicitly provided by the caller.
 	if path == deepai.PathChat && settings.PresetDesktopShape && apiKey != "" && s.shapeNeeded(apiKey) {
 		if alt, inserted := deepai.EnsureSystemMessage(body, ""); inserted {
 			body = alt
@@ -52,11 +52,11 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	for i := 0; i < maxTries; i++ {
 		acct, ok, candidates := s.pickFreeAccount(group)
 		if !candidates {
-			// 池里没有可调度账号（全被拦 / 分组为空）：交给 noAccountError 说明原因。
+			// No schedulable account in the pool (all blocked / empty group): delegate to noAccountError to explain the reason.
 			break
 		}
 		if !ok {
-			// 全忙：短暂排队而不是立刻 429；等槽位不消耗重试预算。
+			// All busy: queue briefly instead of returning 429 immediately; waiting for a slot does not consume the retry budget.
 			lastErr = errAllAccountsBusy()
 			if !time.Now().Before(deadline) {
 				break
@@ -71,21 +71,21 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 			i--
 			continue
 		}
-		// 额度快照过旧时顺手异步刷新：只刷新「已经探过、但结果过期」的账号，
-		// 不在热点路径上给从未探测的号新增上游请求（那些交给入池复探 / 后台守护）。
+		// Refresh the quota snapshot asynchronously when it is too old: only refresh accounts that have already been probed but whose results are stale,
+		// and do not add upstream requests for never-probed accounts on the hot path (those are handled by pool-entry re-probing / the background daemon).
 		if acct.Theos != nil && quotaNeedsRefresh(acct, time.Now(), quotaStaleAfter) {
 			s.probeAsync(acct)
 		}
 		used = acct
 
 		client := s.clientFor(acct)
-		// 与桌面端一致：推理前先补签到（仅在挑战过期 / 未回传时才会真的发请求）。
+		// Consistent with the desktop client: perform check-in before inference (a request is actually sent only when the challenge has expired / was not returned).
 		//
-		// 这是**同步**调用：最坏占掉 checkInAttemptTimeout（10s）的推理延迟。
-		// 没不能改异步：nonce 回传是上游判定「真实客户端」的依据，先发聊天再补
-		// 签到会让那次请求落到替身分支（见 docs/recon.md §5.1）。失败不影响本次
-		// 推理，但「慢」是用户能感知的，所以超过阈值留一条日志（之前这笔等待
-		// 在任何日志里都看不到）。
+		// This is a **synchronous** call: at worst it adds checkInAttemptTimeout (10s) of inference latency.
+		// It cannot be made asynchronous: the nonce return is the upstream's basis for determining a "real client"; sending the chat first and then supplementing the
+		// check-in would make that request land in the stand-in branch (see docs/recon.md §5.1). Failure does not affect this
+		// inference, but the slowness is user-perceivable, so leave a log line when it exceeds the threshold (previously this wait
+		// was not visible in any log).
 		if path == deepai.PathChat || path == deepai.PathResponses {
 			outcome := client.EnsureCheckIn(ctx, acct)
 			s.metrics.observeCheckIn(outcome)
@@ -121,8 +121,8 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		}
 		httpErr := &deepai.HTTPError{Op: "上游推理", Status: resp.StatusCode, Body: payload}
 
-		// 上游 0.3.19 对请求体做了形状校验（400 + "This request is not one
-		// DeepAI Code sends."）。用桌面端字段白名单 + 补 system 消息同号重试一次。
+		// Upstream 0.3.19 added shape validation on the request body (400 + "This request is not one
+		// DeepAI Code sends."). Use the desktop field whitelist + append a system message and retry once on the same account.
 		if httpErr.BodyRejected() && path == deepai.PathChat {
 			s.markShapeNeeded(apiKey)
 			if alt, ok := deepai.ChatBodyFallback(body, ""); ok {
@@ -149,25 +149,25 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 		s.metrics.observeUpstreamError(path, httpErr.Code(), httpErr.Status)
 
 		switch classifyUpstreamError(httpErr) {
-		// 邮箱未验证：账号登录态无效，换号也救不了它。
-		// 标记后继续试下一个号（下次 /theos 成功会自动解封）；
-		// 不要把它当普通 403 反复重试。
+		// Email not verified: the account's login state is invalid; switching accounts won't save it.
+		// After marking, continue trying the next account (the next successful /theos call will automatically unblock it);
+		// Do not treat it as an ordinary 403 and retry repeatedly.
 		case actBlockAndRetry:
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			lastErr = httpErr
 			continue
-		// 账号级策略拦截：记 blocked 后直接回传（下一次请求调度会跳过它）。
+		// Account-level policy block: record as blocked and return directly (the next request scheduling will skip it).
 		case actBlockAndReturn:
 			s.Store.BlockAccount(acct.ID, blockedReason(httpErr))
 			return nil, acct, httpErr
-		// 缺机器指纹 / 请求本身的问题：换号没用，直接回传。
+		// Missing machine fingerprint / a problem with the request itself: switching accounts won't help, return directly.
 		case actReturn:
 			return nil, acct, httpErr
-		// 形状被拒：上面已经补形状重试过一次（仍失败说明补了也不行）。
+		// Shape rejected: the shape was already patched and retried once above (still failing means patching doesn't help).
 		case actShapeFallback:
 			return nil, acct, httpErr
-		// 车道不对：先借账号凭据打 /models 探一次，命中新车道就换道重试；
-		// 仍在冷却期 / 探测失败时把 426 原样交给调用方（提示升级网关）。
+		// Wrong lane: first use the account credentials to probe /models once; if a new lane is hit, switch lanes and retry;
+		// If still in the cooldown period / the probe fails, hand the 426 back to the caller as-is (prompting a gateway upgrade).
 		case actProbeLane:
 			before := s.CurrentLane()
 			if lane, lerr := s.RefreshLane(ctx); lerr == nil && lane != "" && lane != before {
@@ -175,15 +175,15 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 				continue
 			}
 			return nil, acct, httpErr
-		// 当日额度用完：标记到 refresh_at，换号；同一账号不再白撞 403。
+		// Daily quota exhausted: mark until refresh_at, switch accounts; don't keep blindly hitting 403 on the same account.
 		case actQuotaExhausted:
 			until := httpErr.QuotaResetAt(quotaExhaustedFallback, time.Now())
 			s.Store.MarkQuotaExhausted(acct.ID, until)
 			logx.Warn("账号当日额度用完", "account", acctLabel(acct), "until", until.Format(time.RFC3339))
 			lastErr = httpErr
 			continue
-		// 容量拒绝：池里还有空槽就立刻换号（粘性由 X-Session-Affinity 保证，
-		// 不需要在同一个号上干等）；整池都满了才按 Retry-After 等一次。
+		// Capacity rejection: if the pool still has a free slot, switch accounts immediately (stickiness is guaranteed by X-Session-Affinity,
+		// no need to wait idly on the same account); only when the whole pool is full, wait once per Retry-After.
 		case actWaitCapacity:
 			lastErr = httpErr
 			if s.hasFreeAccount() {
@@ -210,21 +210,21 @@ func (s *Server) openModel(ctx context.Context, path string, body []byte, affini
 	return nil, used, lastErr
 }
 
-// checkInSlowWarn 是「签到阻塞推理」的告警阈值。
+// checkInSlowWarn is the warning threshold for "check-in blocking inference".
 //
-// 正常签到是 1~2 个 RTT（百毫秒级）；超过这个值说明上游变慢或正在走重试，
-// 用户能感知到首包延迟，需要留痕。
+// A normal check-in is 1~2 RTTs (hundreds of milliseconds); exceeding this value means the upstream has slowed down or is going through retries,
+// and the user can perceive the first-packet latency, so it needs to be recorded.
 const checkInSlowWarn = 2 * time.Second
 
-// holdResponseBody 把上游响应体包成两层：外层空闲超时，内层归还账号槽位。
+// holdResponseBody wraps the upstream response body in two layers: the outer idle timeout, the inner returning the account slot.
 //
-// 两条「返回 2xx」的路径（正常响应与请求体形状回退重试）必须完全一致：
-// 漏掉任何一层，上游发完首帧后挂住时就会把连接与账号槽位一起挂到客户端断开。
-// 历史上回退路径就漏了外层，这是回归测试要锁住的点。
+// The two "return 2xx" paths (normal response and request-body shape fallback retry) must be completely consistent:
+// if either layer is missed, when the upstream hangs after sending the first frame, both the connection and the account slot will hang until the client disconnects.
+// Historically the fallback path missed the outer layer; this is the point the regression test must lock down.
 func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool) io.ReadCloser {
 	firstByte := upstreamIdleTimeout
 	if !stream {
-		// 非流式：首字节可能要等很久（长思考），之后才按帧间空闲判死。
+		// Non-streaming: the first byte may take a long time (long thinking), and only afterward is a timeout declared based on inter-frame idle time.
 		firstByte = upstreamFirstByteTimeout
 	}
 	return newIdleTimeoutBody(
@@ -234,7 +234,7 @@ func (s *Server) holdResponseBody(body io.ReadCloser, acctID string, stream bool
 	)
 }
 
-// callJSON 发起一次非流式上游请求并解析 JSON。
+// callJSON initiates a non-streaming upstream request and parses the JSON.
 func (s *Server) callJSON(ctx context.Context, path string, payload map[string]any, affinity, group, apiKey string) (map[string]any, *deepai.Account, error) {
 	ctx, cancel := context.WithTimeout(ctx, nonStreamBudget)
 	defer cancel()
@@ -259,13 +259,13 @@ func (s *Server) callJSON(ctx context.Context, path string, payload map[string]a
 	return out, acct, nil
 }
 
-// writeUpstreamErr 把上游错误原样（或包装后）返回给客户端。
+// writeUpstreamErr returns the upstream error to the client as-is (or wrapped).
 func writeUpstreamErr(w http.ResponseWriter, err error) {
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {
 		if json.Valid(he.Body) && len(he.Body) > 0 {
-			// 走统一的原始 JSON 写出：Content-Type 与状态码只在 writeRawJSON 一处维护，
-			// 避免每个错误分支各拼一遍响应头。写的是 JSON，不是 HTML。
+			// Use the unified raw JSON write path: Content-Type and status code are maintained only in one place, writeRawJSON,
+			// avoiding each error branch assembling the response headers separately. What is written is JSON, not HTML.
 			httpx.WriteRawJSON(w, he.Status, he.Body)
 			return
 		}
@@ -282,7 +282,7 @@ func writeUpstreamErr(w http.ResponseWriter, err error) {
 	httpx.WriteErr(w, http.StatusBadGateway, err.Error(), "upstream_error")
 }
 
-// writeAnthropicUpstreamErr 按 Anthropic 错误结构回传上游错误。
+// writeAnthropicUpstreamErr returns the upstream error according to the Anthropic error structure.
 func writeAnthropicUpstreamErr(w http.ResponseWriter, err error) {
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {

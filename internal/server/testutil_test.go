@@ -16,18 +16,18 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// TestMain 固定机器指纹：MachineID 带 sync.Once，必须在任何 Client 构造前设置，
-// 否则 Windows 下会真的去起 powershell 读 SMBIOS。
+// TestMain fixes the machine fingerprint: MachineID uses sync.Once, so it must be set before any Client is constructed,
+// otherwise on Windows it will actually launch powershell to read SMBIOS.
 func TestMain(m *testing.M) {
 	os.Setenv("DEEPAI_MACHINE_ID", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 	os.Exit(m.Run())
 }
 
-// upstream 是可由测试驱动的假上游。
+// upstream is a fake upstream that can be driven by tests.
 type upstream struct {
 	srv *httptest.Server
 
-	// mu 保护 requests：checkin / 并发探测会同时打进来。
+	// mu guards requests: check-in / concurrent probing will hit it simultaneously.
 	mu       sync.Mutex
 	requests []recordedRequest
 }
@@ -49,7 +49,7 @@ func (u *upstream) last(t *testing.T) recordedRequest {
 	return u.requests[len(u.requests)-1]
 }
 
-// newUpstream 启动假上游；handler 负责写响应。
+// newUpstream starts the fake upstream; handler is responsible for writing the response.
 func newUpstream(t *testing.T, handler http.HandlerFunc) *upstream {
 	t.Helper()
 	u := &upstream{}
@@ -68,7 +68,7 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) *upstream {
 	return u
 }
 
-// newTestServer 构造一个指向假上游、已有一个账号和一个密钥的网关。
+// newTestServer constructs a gateway pointing at the fake upstream, with one account and one key already present.
 func newTestServer(t *testing.T, u *upstream) (*Server, string) {
 	t.Helper()
 
@@ -91,7 +91,7 @@ func newTestServer(t *testing.T, u *upstream) (*Server, string) {
 	return s, key
 }
 
-// do 发一个请求到网关，返回响应记录器。
+// do sends a request to the gateway and returns the response recorder.
 func do(t *testing.T, s *Server, method, path, key, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rd io.Reader
@@ -99,7 +99,7 @@ func do(t *testing.T, s *Server, method, path, key, body string) *httptest.Respo
 		rd = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, rd)
-	req.RemoteAddr = "127.0.0.1:34567" // 视为本机来源
+	req.RemoteAddr = "127.0.0.1:34567" // treat as loopback source
 	req.Header.Set("Content-Type", "application/json")
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
@@ -109,7 +109,7 @@ func do(t *testing.T, s *Server, method, path, key, body string) *httptest.Respo
 	return rec
 }
 
-// sseEvents 把 SSE 响应体解析为 (event, data) 序列。
+// sseEvents parses the SSE response body into a sequence of (event, data).
 func sseEvents(t *testing.T, raw string) []sseEvent {
 	t.Helper()
 	var out []sseEvent
@@ -148,7 +148,7 @@ func (e sseEvent) JSON(t *testing.T) map[string]any {
 	return m
 }
 
-// eventNames 提取事件名序列。
+// eventNames extracts the sequence of event names.
 func eventNames(events []sseEvent) []string {
 	out := make([]string, len(events))
 	for i, e := range events {

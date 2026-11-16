@@ -9,15 +9,16 @@ import (
 	"time"
 )
 
-// maxRequestBody 限制入站请求体大小。
+// maxRequestBody limits the inbound request body size.
 //
-// 实际读取已移到 httpx.ReadBodyWithLimit（同一常量在 httpx.MaxRequestBody）。
+// Actual reading has moved to httpx.ReadBodyWithLimit (same constant in httpx.MaxRequestBody).
 const maxRequestBody = 32 << 20
 
-// affinityPattern 与桌面端一致：只透传安全字符集的会话标识。
+// affinityPattern matches the desktop client: only session identifiers from the safe character set are
+// passed through.
 var affinityPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,256}$`)
 
-// affinityFor 解析会话粘性标识（响应头优先，其次 prompt_cache_key）。
+// affinityFor resolves the session stickiness identifier (response header first, then prompt_cache_key).
 func affinityFor(r *http.Request, payload map[string]any) string {
 	if r != nil {
 		if v := strings.TrimSpace(r.Header.Get("X-Session-Affinity")); affinityPattern.MatchString(v) {
@@ -32,18 +33,18 @@ func affinityFor(r *http.Request, payload map[string]any) string {
 	return ""
 }
 
-// nonStreamBudget 是非流式请求的整体预算（选号 + 重试 + 读体）。
+// nonStreamBudget is the overall budget for a non-streaming request (account selection + retries + body read).
 //
-// 没有它时，「MaxRetries × Retry-After≤30s」理论上可挂 90s 以上。
+// Without it, "MaxRetries × Retry-After≤30s" could theoretically hang for over 90s.
 const nonStreamBudget = 90 * time.Second
 
-// requestModelName 提取请求里的 model 字段。
+// requestModelName extracts the model field from the request.
 func requestModelName(payload map[string]any) string {
 	v, _ := payload["model"].(string)
 	return strings.TrimSpace(v)
 }
 
-// estimatePromptLen 粗略统计 messages / input 的字符数。
+// estimatePromptLen roughly counts the characters in messages / input.
 func estimatePromptLen(payload map[string]any) int {
 	if v, ok := payload["messages"]; ok {
 		if raw, err := json.Marshal(v); err == nil {
@@ -58,7 +59,7 @@ func estimatePromptLen(payload map[string]any) int {
 	return 0
 }
 
-// chatTextLen 统计 chat 响应中的正文 + 思维链字符数。
+// chatTextLen counts the characters in the content + chain-of-thought of a chat response.
 func chatTextLen(m map[string]any) int {
 	choices, _ := m["choices"].([]any)
 	total := 0
@@ -79,7 +80,7 @@ func chatTextLen(m map[string]any) int {
 	return total
 }
 
-// requestGroup 返回当前请求密钥绑定的号池分组（无密钥时为空=全部分组）。
+// requestGroup returns the account pool group bound to the current request key (empty = all groups when there is no key).
 func (s *Server) requestGroup(r *http.Request) string {
 	if r == nil {
 		return ""
@@ -91,12 +92,12 @@ func (s *Server) requestGroup(r *http.Request) string {
 	return s.Store.KeyGroup(key)
 }
 
-// nextAccount 按请求所属分组挑一个轮询账号。
+// nextAccount picks a rotation account from the group the request belongs to.
 func (s *Server) nextAccount(r *http.Request) *deepai.Account {
 	return s.Store.NextAccountGroup(s.requestGroup(r))
 }
 
-// clientFor 返回账号绑定的上游客户端（按代理缓存）。
+// clientFor returns the upstream client bound to the account (cached by proxy).
 func (s *Server) clientFor(acct *deepai.Account) *deepai.Client {
 	if acct == nil || strings.TrimSpace(acct.Proxy) == "" {
 		return s.Up

@@ -13,33 +13,33 @@ import (
 )
 
 const (
-	// WarmUpstreamWorkers 是连接预热的并发上限：出口少时没必要开太多，
-	// 出口多时也不该在启动瞬间把代理打满。
+	// WarmUpstreamWorkers is the concurrency limit for connection warm-up: when there are few egresses there is no need to open too many,
+	// and when there are many egresses it should not saturate the proxies at startup.
 	WarmUpstreamWorkers = 4
-	// WarmUpstreamTimeout 是单个出口的预热预算（含代理握手）。
+	// WarmUpstreamTimeout is the warm-up budget for a single egress (including proxy handshake).
 	WarmUpstreamTimeout = 10 * time.Second
 )
 
-// WarmUpstream 按号池里实际出现过的出口各打一次 `/models`，把
-// DNS / TCP / TLS（以及代理 CONNECT）提前做完。
+// WarmUpstream hits `/models` once per egress that actually appears in the account pool, completing
+// DNS / TCP / TLS (and proxy CONNECT) ahead of time.
 //
-// 为什么值得做：首个真实推理请求要串行付整条握手成本。r2 压测里冷启动
-// p90 是 4129ms，热连接约 2000ms；`/models` 不烧 Theos，是唯一「免费但会
-// 走完整链路」的端点。
+// Why it is worth doing: the first real inference request would otherwise pay the entire handshake cost serially. In r2 load tests, cold start
+// p90 is 4129ms, while a warm connection is about 2000ms; `/models` does not burn Theos, making it the only endpoint that is "free but
+// goes through the full path".
 //
-// 2026-11-14 起 /models 要求 Api-Key，所以每个出口取**该出口上的一个真实
-// 账号**去预热（而不是只带 Proxy 的空账号）；401 仍算预热成功 —— 那已经
-// 证明 DNS/TCP/TLS/代理 CONNECT 全部通了，只是这个出口上的号没 Key。
+// Since 2026-11-14, /models requires an Api-Key, so for each egress we take **a real account on that egress**
+// to warm up (rather than an empty account with only a Proxy); a 401 still counts as a successful warm-up - it already
+// proves that DNS/TCP/TLS/proxy CONNECT all succeeded, only that the account on this egress has no Key.
 //
-// 语义：只预热启用中的账号用到的出口（含「直连」这一档），同一出口只打一次；
-// 失败静默（预热是纯优化，不能影响启动）；返回成功的出口数。
+// Semantics: only warm up the egresses used by enabled accounts (including the "direct" tier), and hit each egress only once;
+// failures are silent (warm-up is a pure optimization and must not affect startup); returns the number of successful egresses.
 func (s *Server) WarmUpstream(ctx context.Context) int {
 	byEgress := map[string]*deepai.Account{}
 	for _, a := range s.Store.Accounts() {
 		if a == nil || !a.Enabled {
 			continue
 		}
-		// 空串代表直连（走 s.Up），这里作为一个独立出口参与预热。
+		// The empty string represents direct connection (via s.Up), and here it participates in warm-up as an independent egress.
 		if _, seen := byEgress[a.Proxy]; !seen {
 			byEgress[a.Proxy] = a
 		}
@@ -49,7 +49,7 @@ func (s *Server) WarmUpstream(ctx context.Context) int {
 	for proxy := range byEgress {
 		targets = append(targets, proxy)
 	}
-	// 固定顺序：日志与测试才对得上，也避免每次启动的预热顺序抖动。
+	// Fixed order: only then do logs and tests line up, and it also avoids warm-up order jitter on each startup.
 	sort.Strings(targets)
 
 	var ok atomic.Int64
@@ -66,10 +66,10 @@ func (s *Server) WarmUpstream(ctx context.Context) int {
 	return int(ok.Load())
 }
 
-// warmReachable 判断预热失败是否属于「链路其实已经通了」。
+// warmReachable determines whether a warm-up failure actually means "the path is already up".
 //
-// 401 = 上游要 Key 而这个出口上的号没给（或 Key 失效）：DNS/TCP/TLS 与代理
-// CONNECT 都已经成功，预热的目的一样达到。5xx / 超时才是真的没通。
+// 401 = the upstream requires a Key but the account on this egress did not provide one (or the Key is invalid): DNS/TCP/TLS and proxy
+// CONNECT have all succeeded, so the purpose of warm-up is equally achieved. Only 5xx / timeouts mean it is truly unreachable.
 func warmReachable(err error) bool {
 	var he *deepai.HTTPError
 	return errors.As(err, &he) && he.Status == http.StatusUnauthorized

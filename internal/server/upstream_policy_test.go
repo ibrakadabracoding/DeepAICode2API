@@ -17,7 +17,7 @@ func mustParseTime(t *testing.T, s string) time.Time {
 	return ts
 }
 
-// TestClassifyUpstreamError 固化错误 → 动作映射（表驱动，新增错误码时先改这里）。
+// TestClassifyUpstreamError locks in the error → action mapping (table-driven; when adding a new error code, update this first).
 func TestClassifyUpstreamError(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -52,7 +52,7 @@ func TestClassifyUpstreamError(t *testing.T) {
 	}
 }
 
-// TestQuotaResetAt 覆盖 refresh_at 解析与兜底。
+// TestQuotaResetAt covers refresh_at parsing and fallback.
 func TestQuotaResetAt(t *testing.T) {
 	now := mustParseTime(t, "2026-11-13T12:00:00Z")
 

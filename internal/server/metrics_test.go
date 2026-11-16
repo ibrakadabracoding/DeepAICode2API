@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TestHistQuantile 固化桶分位：返回所在桶的上界，样本不足时为 0。
+// TestHistQuantile pins down bucket quantiles: returns the upper bound of the bucket the value falls in, or 0 when there are insufficient samples.
 func TestHistQuantile(t *testing.T) {
 	h := newHist([]float64{0.1, 0.5, 1, 5})
 	if got := h.quantile(0.5); got != 0 {
@@ -17,19 +17,19 @@ func TestHistQuantile(t *testing.T) {
 	h.observe(0.3)
 	h.observe(0.9)
 	h.observe(9)
-	// 4 个样本，p50 的秩 = 2：第 1 个在 <=0.1 桶、第 2 个在 <=0.5 桶，
-	// 累计到 2 时命中 0.5 桶，返回该桶上界。
+	// 4 samples, the rank of p50 = 2: the 1st falls in the <=0.1 bucket, the 2nd in the <=0.5 bucket,
+	// when the cumulative count reaches 2 it hits the 0.5 bucket and returns that bucket's upper bound.
 	if got := h.quantile(0.5); got != 0.5 {
 		t.Fatalf("p50 = %v，期望 0.5", got)
 	}
-	// 样本少时秩会截断：4*0.95=3.8 → 秩 3，落在 <=1 桶。
-	// 这正是"返回桶上界"的取向：宁可给已知的保守值，不插值造假精度。
+	// with few samples the rank is truncated: 4*0.95=3.8 → rank 3, falling in the <=1 bucket.
+	// This is exactly the intent of "returning the bucket upper bound": better to give a known conservative value than to interpolate and fake precision.
 	if got := h.quantile(0.95); got != 1 {
 		t.Fatalf("p95 = %v，期望 1", got)
 	}
 }
 
-// TestMetricsRecordsExtras 覆盖扩展指标的累加口径。
+// TestMetricsRecordsExtras covers the accumulation semantics of the extra metrics.
 func TestMetricsRecordsExtras(t *testing.T) {
 	m := newMetrics()
 	m.observe("chat", 200, 100*time.Millisecond)
@@ -57,7 +57,7 @@ func TestMetricsRecordsExtras(t *testing.T) {
 	}
 }
 
-// TestMetricsEndpointExposition 断言 /metrics 暴露了新增系列。
+// TestMetricsEndpointExposition asserts that /metrics exposes the newly added series.
 func TestMetricsEndpointExposition(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	s.metrics.observe("chat", 200, 120*time.Millisecond)
@@ -85,7 +85,7 @@ func TestMetricsEndpointExposition(t *testing.T) {
 	}
 }
 
-// TestOverviewIncludesRuntimeHealth 断言控制台概览带上运行健康字段。
+// TestOverviewIncludesRuntimeHealth asserts that the console overview includes the runtime health fields.
 func TestOverviewIncludesRuntimeHealth(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	s.metrics.observe("chat", 200, 100*time.Millisecond)

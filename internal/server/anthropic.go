@@ -9,12 +9,12 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// --- Anthropic 请求模型 ---
+// --- Anthropic request model ---
 
-// handleAnthropicMessages 是 POST /v1/messages 的入口。
+// handleAnthropicMessages is the entry point for POST /v1/messages.
 //
-// 把 Anthropic Messages 请求转换为 OpenAI Chat Completions，调用上游后再
-// 映射回 Anthropic 的 message / SSE 事件模型（含 tool_use、thinking）。
+// Convert the Anthropic Messages request to OpenAI Chat Completions, call the upstream, then
+// map it back to the Anthropic message / SSE event model (including tool_use and thinking).
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
@@ -55,7 +55,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	s.blockingAnthropic(w, r, payload, affinity, rl)
 }
 
-// blockingAnthropic 收集完整回复后按 Anthropic message 结构返回。
+// blockingAnthropic collects the full reply and returns it in the Anthropic message structure.
 func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
@@ -75,7 +75,7 @@ func (s *Server) blockingAnthropic(w http.ResponseWriter, r *http.Request, paylo
 	httpx.WriteJSON(w, http.StatusOK, msg)
 }
 
-// streamAnthropic 以 Anthropic SSE 事件模型流式返回。
+// streamAnthropic streams the response using the Anthropic SSE event model.
 func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
@@ -144,8 +144,8 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	})
 
 	if streamErr != nil {
-		// 出错时只关闭当前已打开的块，不 flush 工具缓冲：
-		// 参数 JSON 可能只到了一半，当作完整 tool_use 发出去会让客户端解析失败。
+		// On error, only close the currently open block; do not flush the tool buffer:
+		// the argument JSON may be only half received, and sending it out as a complete tool_use would make client parsing fail.
 		block.Close()
 		send("error", map[string]any{
 			"type":  "error",
@@ -171,10 +171,10 @@ func (s *Server) streamAnthropic(w http.ResponseWriter, r *http.Request, payload
 	rl.done(outLen, usage, streamErr)
 }
 
-// handleAnthropicCountTokens 返回粗略的输入 token 估算。
+// handleAnthropicCountTokens returns a rough input token estimate.
 //
-// Anthropic 客户端（如 Claude Code）会在发送消息前调用它做预算控制；
-// 上游不提供该能力，这里用字符数近似，只需单调合理即可。
+// Anthropic clients (such as Claude Code) call it before sending messages for budget control;
+// the upstream does not provide this capability, so a character-count approximation is used here; it only needs to be monotonic and reasonable.
 func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAnthropicErr(w, http.StatusMethodNotAllowed, "invalid_request_error", "仅支持 POST")
@@ -197,9 +197,9 @@ func (s *Server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// --- 工具函数 ---
+// --- Helper functions ---
 
-// estTokens 用字符数粗略估算 token（1 token ≈ 2 字符）。
+// estTokens roughly estimates tokens by character count (1 token ≈ 2 characters).
 func estTokens(chars int) int {
 	if chars <= 0 {
 		return 0
@@ -207,7 +207,7 @@ func estTokens(chars int) int {
 	return chars/2 + 1
 }
 
-// writeAnthropicErr 按 Anthropic 的错误结构返回。
+// writeAnthropicErr returns an error in the Anthropic error structure.
 func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
 	httpx.WriteJSON(w, code, map[string]any{
 		"type":  "error",
@@ -215,7 +215,7 @@ func writeAnthropicErr(w http.ResponseWriter, code int, typ, msg string) {
 	})
 }
 
-// requestTimeout 返回设置里的请求超时。
+// requestTimeout returns the request timeout from settings.
 func (s *Server) requestTimeout() time.Duration {
 	sec := s.Store.Settings().RequestTimeout
 	if sec <= 0 {

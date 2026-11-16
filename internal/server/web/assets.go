@@ -1,11 +1,11 @@
-// Package web 是控制台静态资源包：把 HTML / CSS / ES module / 图标嵌进二进制，
-// 并负责内容指纹（ETag）、Content-Type 与 CSP 等响应头。
+// Package web is the console static asset package: it embeds HTML / CSS / ES modules / icons into the binary,
+// and is responsible for content fingerprint (ETag), Content-Type, CSP, and other response headers.
 //
-// 这些资源原先是 internal/server 里的一个 embed.FS + 200 行服务代码，与路由和
-// 协议实现混在一起。资源在编译期固定、无运行时依赖，因此独立成包后：
-//   - internal/server 只需要 `web.ServeAsset(w, r, name)`；
-//   - 资源路径的合法性（白名单）仍留在路由层，embed 不打开展示；
-//   - 契约测试（console_*.go）可以直接对 web 包断言。
+// These assets were previously an embed.FS + 200 lines of serving code inside internal/server, mixed together with routing and
+// protocol implementation. The assets are fixed at compile time with no runtime dependencies, so after splitting into its own package:
+// - internal/server only needs `web.ServeAsset(w, r, name)`;
+// - validation of asset path legality (allowlist) stays in the routing layer; embed is not expanded for display;
+// - contract tests (console_*.go) can assert directly against the web package.
 package web
 
 import (
@@ -21,33 +21,33 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// 控制台是「标记 + 样式 + 一组 ES module」的静态包，全部嵌进二进制：
-// 无外部依赖、无构建步骤、离线可用。
+// The console is a static package of "markup + styles + a set of ES modules", all embedded into the binary:
+// no external dependencies, no build step, usable offline.
 //
 //go:embed index.html login.html style.css favicon.ico apple-touch-icon.png js/*.js js/render/*.js js/i18n/*.js
 var FS embed.FS
 
-// HTML 是控制台页面标记（不含内联脚本与样式）。
+// HTML is the console page markup (no inline scripts or styles).
 //
-// 保留成变量是为了让契约测试能直接断言标记内容（见 internal/server/console_test.go）。
+// It is kept as a variable so contract tests can assert directly on the markup content (see internal/server/console_test.go).
 var HTML = MustRead("index.html")
 
-// LoginHTML 是 /login 页面标记（登录页有自己的 DOM，与 index.html 不同）。
+// LoginHTML is the /login page markup (the login page has its own DOM, different from index.html).
 var LoginHTML = MustRead("login.html")
 
-// CSS 是控制台样式表（已从 index.html 抽出为独立资源）。
+// CSS is the console stylesheet (already extracted from index.html into a standalone asset).
 var CSS = MustRead("style.css")
 
-// assetPrefix 是旧调用点残留的路径前缀（历史上资源在 internal/server/web/ 下，
-// 资源名写成 "web/js/app.js"）。Read 兼容带前缀与不带前缀两种写法。
+// assetPrefix is the path prefix left over from old call sites (historically assets lived under internal/server/web/,
+// and asset names were written as "web/js/app.js"). Read supports both prefixed and unprefixed forms.
 const assetPrefix = "web/"
 
-// Read 读取一个内嵌资源。
+// Read reads an embedded asset.
 func Read(name string) ([]byte, error) {
 	return FS.ReadFile(strings.TrimPrefix(name, assetPrefix))
 }
 
-// MustRead 读取一个内嵌资源，缺失即 panic（编译期资源，缺了就是构建错误）。
+// MustRead reads an embedded asset and panics if missing (compile-time assets, so missing means a build error).
 func MustRead(name string) []byte {
 	b, err := Read(name)
 	if err != nil {
@@ -56,10 +56,10 @@ func MustRead(name string) []byte {
 	return b
 }
 
-// ScriptNames 返回全部内嵌脚本的资源名（已排序，带 "web/" 前缀）。
+// ScriptNames returns the asset names of all embedded scripts (sorted, with the "web/" prefix).
 //
-// 单独暴露的原因：契约测试要按「这个脚本属于哪个页面」分组校验 id 引用
-// （login.js 的 #loginPw 在 login.html 里，不在 index.html 里）。
+// Exposed separately because contract tests need to validate id references grouped by "which page this script belongs to"
+// (login.js's #loginPw is in login.html, not in index.html).
 func ScriptNames() []string {
 	var names []string
 	for _, dir := range []string{"js", "js/render", "js/i18n"} {
@@ -78,10 +78,10 @@ func ScriptNames() []string {
 	return names
 }
 
-// Scripts 返回全部模块化脚本的拼接结果，供契约测试做「字符串存在性」断言。
+// Scripts returns the concatenation of all modular scripts, for contract tests to make "string existence" assertions.
 //
-// 前端已拆成多个 ES module：断言某个函数名/选择器存在时，必须扫全部脚本，
-// 否则测试会在拆分后静默失效（这比测错更危险）。
+// The frontend has been split into multiple ES modules: when asserting that a function name/selector exists, all scripts must be scanned,
+// otherwise the test will silently stop working after the split (which is more dangerous than testing the wrong thing).
 func Scripts() string {
 	var b strings.Builder
 	for _, name := range ScriptNames() {
@@ -93,7 +93,7 @@ func Scripts() string {
 	return b.String()
 }
 
-// assetType 给出内嵌资源的 Content-Type。
+// assetType returns the Content-Type of an embedded asset.
 func assetType(name string) string {
 	switch path.Ext(name) {
 	case ".html":
@@ -103,8 +103,8 @@ func assetType(name string) string {
 	case ".js":
 		return "text/javascript; charset=utf-8"
 	case ".ico":
-		// 官方类型是 image/vnd.microsoft.icon（RFC 7903），但 image/x-icon 是
-		// 实际世界里最常见的写法、所有浏览器都认，这里跟 nginx 的默认保持一致。
+		// The official type is image/vnd.microsoft.icon (RFC 7903), but image/x-icon is
+		// the most common spelling in the real world and recognized by all browsers; here it is kept consistent with nginx's default.
 		return "image/x-icon"
 	case ".png":
 		return "image/png"
@@ -113,22 +113,22 @@ func assetType(name string) string {
 	}
 }
 
-// CSP 是控制台页面的内容安全策略。
+// CSP is the Content Security Policy for the console page.
 //
-// 控制台承载管理口令，是整套系统里最值得加 CSP 的页面。资源全部同源、
-// 无外部引用，因此不需要放宽任何一条：
-//   - script-src 'self'：内联脚本一律禁止（主题启动脚本也做成了外部文件）；
-//   - style-src 'self'：inline style 属性已从标记里移除（统一改用具名工具类）；
-//   - connect-src 'self'：控制台只调自己的 /admin/api/*；
-//   - frame-ancestors 'none' + form-action 'self'：防点击劫持与外发。
+// The console carries the admin password, making it the page in the entire system most worth adding CSP to. All resources are same-origin,
+// with no external references, so no directive needs to be relaxed:
+// - script-src 'self': inline scripts are strictly forbidden (the theme bootstrap script is also made an external file);
+// - style-src 'self': inline style attributes have been removed from the markup (uniformly replaced with named utility classes);
+// - connect-src 'self': the console only calls its own /admin/api/*;
+// - frame-ancestors 'none' + form-action 'self': prevents clickjacking and outbound form submissions.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 	"img-src 'self' data:; connect-src 'self'; font-src 'self'; " +
 	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
 
-// assetETags 缓存内嵌资源的内容指纹（资源在编译期固定，算一次即可）。
+// assetETags caches the content fingerprints of embedded assets (assets are fixed at compile time, so computing once is enough).
 var assetETags sync.Map // name -> string
 
-// assetETag 返回资源的内容 ETag（形如 "abc…"）。
+// assetETag returns the content ETag of an asset (in the form "abc...").
 func assetETag(name string, raw []byte) string {
 	if v, ok := assetETags.Load(name); ok {
 		return v.(string)
@@ -139,7 +139,7 @@ func assetETag(name string, raw []byte) string {
 	return etag
 }
 
-// ServeAsset 输出一个内嵌资源（页面 / 样式 / 脚本 / 图标）。
+// ServeAsset outputs an embedded asset (page / style / script / icon).
 func ServeAsset(w http.ResponseWriter, r *http.Request, name string) {
 	raw, err := Read(name)
 	if err != nil {
@@ -150,11 +150,11 @@ func ServeAsset(w http.ResponseWriter, r *http.Request, name string) {
 	h.Set("Content-Type", assetType(name))
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
-	// 页面与脚本同源，CSP 对两者都生效（页面里没有内联脚本 / 样式）。
+	// The page and scripts are same-origin, and CSP applies to both (there are no inline scripts / styles in the page).
 	h.Set("Content-Security-Policy", CSP)
 
-	// 资源随二进制一起更新：HTML 每次都重新校验，JS/CSS 用 ETag 命中 304。
-	// 旧实现一律 no-store，导致首屏 17 个模块每次全量重下。
+	// Assets are updated together with the binary: HTML is revalidated every time, while JS/CSS hit 304 via ETag.
+	// The old implementation always used no-store, causing all 17 first-screen modules to be fully re-downloaded every time.
 	etag := assetETag(name, raw)
 	h.Set("ETag", etag)
 	if strings.HasSuffix(name, ".html") {

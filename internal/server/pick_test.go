@@ -9,7 +9,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// fillPool 把号池替换成 n 个可用账号（先清空 newTestServer 自带的那个）。
+// fillPool replaces the account pool with n available accounts (first clearing the one that comes with newTestServer).
 func fillPool(t *testing.T, s *Server, n int) {
 	t.Helper()
 	for _, a := range s.Store.Accounts() {
@@ -24,16 +24,16 @@ func fillPool(t *testing.T, s *Server, n int) {
 	}
 }
 
-// TestPickFreeAccountAllocationsBounded 是 P0-1 的回归防线。
+// TestPickFreeAccountAllocationsBounded is the regression guard for P0-1.
 //
-// 旧实现是「循环 n 次，每次 Accounts() 全池深拷贝 + NextAccountGroup 写锁」，
-// 分配数随池子规模线性增长（500 个号时单次选号上千次分配）。现在应当
-// 只有「被选中的那一个账号 + 少量固定开销」。
+// The old implementation was "loop n times, each time deep-copying the whole pool via Accounts() + taking the NextAccountGroup write lock",
+// allocations grew linearly with pool size (with 500 accounts, a single selection did over a thousand allocations). Now it should
+// only be "the one selected account + a small fixed overhead".
 func TestPickFreeAccountAllocationsBounded(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	fillPool(t, s, 500)
 
-	const budget = 40 // 远小于 500（旧实现至少 500×2 次分配）
+	const budget = 40 // far less than 500 (the old implementation did at least 500×2 allocations)
 	got := testing.AllocsPerRun(50, func() {
 		a, ok, _ := s.pickFreeAccount("")
 		if !ok || a == nil {
@@ -46,13 +46,13 @@ func TestPickFreeAccountAllocationsBounded(t *testing.T) {
 	}
 }
 
-// TestPickFreeAccountSkipsBusy 验证并发槽位在选号阶段就被排除，
-// 并且「全忙」与「没有可调度账号」能被区分开。
+// TestPickFreeAccountSkipsBusy verifies that busy concurrency slots are excluded during selection,
+// and that "all busy" can be distinguished from "no schedulable accounts".
 func TestPickFreeAccountSkipsBusy(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	fillPool(t, s, 2)
 
-	// 每个账号最多 maxInFlightPerAccount 个并发；先占满全部。
+	// Each account allows at most maxInFlightPerAccount concurrent requests; first fill them all.
 	var held []string
 	for i := 0; i < 2*maxInFlightPerAccount; i++ {
 		a, ok, candidates := s.pickFreeAccount("")
@@ -64,7 +64,7 @@ func TestPickFreeAccountSkipsBusy(t *testing.T) {
 	if len(held) != 2*maxInFlightPerAccount {
 		t.Fatalf("应占满 2 个账号 × %d 个槽位，实际 %d", maxInFlightPerAccount, len(held))
 	}
-	// 槽位全满：拿不到账号，但 candidates 必须为 true（池里有号，只是忙）。
+	// All slots full: no account can be obtained, but candidates must be true (the pool has accounts, they are just busy).
 	if a, ok, candidates := s.pickFreeAccount(""); ok || a != nil || !candidates {
 		t.Fatalf("全忙时不应选中账号：a=%v ok=%v candidates=%v", a, ok, candidates)
 	}
@@ -76,7 +76,7 @@ func TestPickFreeAccountSkipsBusy(t *testing.T) {
 	}
 }
 
-// TestPickFreeAccountEmptyPool 区分「没号」与「全忙」。
+// TestPickFreeAccountEmptyPool distinguishes "no accounts" from "all busy".
 func TestPickFreeAccountEmptyPool(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	for _, a := range s.Store.Accounts() {
@@ -87,10 +87,10 @@ func TestPickFreeAccountEmptyPool(t *testing.T) {
 	}
 }
 
-// TestCloseInterruptsReprobeBackoff 是 P0-3 的回归防线。
+// TestCloseInterruptsReprobeBackoff is the regression guard for P0-3.
 //
-// 配额复探的退避最长 12 分钟；Close 必须能打断睡眠并立即返回，
-// 否则进程关停会挂到超时。
+// The quota re-probe backoff is up to 12 minutes; Close must be able to interrupt the sleep and return immediately,
+// otherwise process shutdown will hang until timeout.
 func TestCloseInterruptsReprobeBackoff(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.quotaReprobeDelays = []time.Duration{time.Hour}
@@ -112,7 +112,7 @@ func TestCloseInterruptsReprobeBackoff(t *testing.T) {
 	}
 }
 
-// TestCloseWaitsForProbes 验证 Close 会等已登记的探测落盘。
+// TestCloseWaitsForProbes verifies that Close waits for registered probes to persist to disk.
 func TestCloseWaitsForProbes(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 

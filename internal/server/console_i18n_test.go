@@ -7,16 +7,21 @@ import (
 	"testing"
 )
 
-// i18nMissingAllowlist 是「已知不做翻译」的中文片段。
+// i18nMissingAllowlist holds Chinese fragments that are known not to need translation.
 //
-// 它们分三类，都不是漏翻：
-//   - 拼接片段：`t("共 ") + n + t(" 个模型")`。正确做法是改成
-//     `t("共 {n} 个模型", {n})`，属于前端重写，不在 i18n 字典的职责内；
-//   - 标识符而非文案：`Language / 语言`（语言选择器自指）、`中`（切换按钮）；
-//   - 转义后查不到的：`已创建密钥（仅显示一次）：\n` 在 JS 里求值带换行，
-//     按原文做键永远命中不了，需要改成不带换行的句子。
+// They fall into three categories, none of which is a missed translation:
+// - Concatenated fragments: `t("Total ") + n + t(" models")`. The right fix is to
+// rewrite it as `t("Total {n} models", {n})`, which is a frontend rewrite and
 //
-// 新增条目必须在这里写明理由——这个名单只应该变短。
+//	outside the i18n dictionary's responsibility;
+//
+// - Identifiers rather than copy: the bilingual language-selector label
+// (`Language / <Chinese for "language">`) and the single CJK toggle glyph;
+//   - Unfindable after escaping: `Key created (shown only once):\n` evaluates with a
+//     newline in JS, so a key built from the raw text can never match; it needs to
+//     become a sentence without the newline.
+//
+// New entries must state their reason here - this list should only shrink.
 var i18nMissingAllowlist = map[string]string{
 	" 个模型":                    "字符串拼接片段",
 	" 个账号，失败 ":                "字符串拼接片段",
@@ -38,11 +43,11 @@ func hasCJK(s string) bool {
 	return false
 }
 
-// i18nDictBlocks 截出全部 `export const DICT = { ... }` 的完整文本。
+// i18nDictBlocks extracts the full text of every `export const DICT = { ... }` block.
 //
-// 字典已按用途拆到 js/i18n/dict-*.js（shell / pages），所以会有多个块；
-// 仍然用**字符串感知的花括号配对**定位结尾（字面量里的 `{n}` 与 JSON 示例
-// 不能干扰配对）。
+// The dictionary has been split by purpose into js/i18n/dict-*.js (shell / pages),
+// so there are multiple blocks; the end is still located with **string-aware brace
+// matching** (literal `{n}` and JSON examples must not interfere with matching).
 func i18nDictBlocks(t *testing.T, src string) []string {
 	t.Helper()
 	const marker = "_DICT = {"
@@ -96,13 +101,15 @@ func i18nDictBlocks(t *testing.T, src string) []string {
 	return out
 }
 
-// i18nDictBlock 返回全部字典块的拼接（供词条解析 / 重复键检查使用）。
+// i18nDictBlock returns the concatenation of all dictionary blocks (used for entry
+// parsing / duplicate key checks).
 func i18nDictBlock(t *testing.T, src string) string {
 	t.Helper()
 	return strings.Join(i18nDictBlocks(t, src), "\n")
 }
 
-// i18nDictionary 解析脚本里的 I18N_EN，返回「中文原文 → 英文」。
+// i18nDictionary parses I18N_EN from the script and returns "Chinese source →
+// English".
 func i18nDictionary(t *testing.T, src string) map[string]string {
 	t.Helper()
 	body := i18nDictBlock(t, src)
@@ -118,31 +125,33 @@ func i18nDictionary(t *testing.T, src string) map[string]string {
 	return dict
 }
 
-// TestConsoleI18nCoverage 是「翻译缺口」的棘轮测试。
+// TestConsoleI18nCoverage is the ratchet test for "translation gaps".
 //
-// 控制台用「中文原文」当 i18n 键：漏加词条时翻成英文会**静默**保留中文，
-// 用户看到中英混排而 CI 全绿。这里把源码里所有含中文的文案抽出来与字典求差集，
-// 只允许 i18nMissingAllowlist 里列出的结构性片段缺席。
+// The console uses the "Chinese source text" as the i18n key: when an entry is
+// missing, switching to English **silently** keeps the Chinese, so users see mixed
+// Chinese/English while CI stays green. This test extracts every Chinese-containing
+// string from the source and diffs it against the dictionary, allowing only the
+// structural fragments listed in i18nMissingAllowlist to be absent.
 func TestConsoleI18nCoverage(t *testing.T) {
 	markup := consoleMarkup()
 	script := web.Scripts()
 	dict := i18nDictionary(t, script)
 
-	candidates := map[string]string{} // 文案 → 出处
+	candidates := map[string]string{} // text → origin
 
-	// 1) JS 字符串字面量（动态渲染的文案）。
+	// 1) JS string literals (dynamically rendered copy).
 	for _, m := range regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`).FindAllStringSubmatch(script, -1) {
 		if v := m[1]; hasCJK(v) && len(v) < 120 {
 			candidates[v] = "JS 字面量"
 		}
 	}
-	// 2) 标记里的文本节点（静态文案）。
+	// 2) Text nodes in the markup (static copy).
 	for _, m := range regexp.MustCompile(`>([^<>]+)<`).FindAllStringSubmatch(markup, -1) {
 		if v := strings.TrimSpace(m[1]); hasCJK(v) && len(v) < 80 {
 			candidates[v] = "标记文本"
 		}
 	}
-	// 3) 占位符与 title（translateAttrs 会翻这两类）。
+	// 3) Placeholders and titles (translateAttrs translates both).
 	for _, m := range regexp.MustCompile(`(?:placeholder|title)="([^"]+)"`).FindAllStringSubmatch(markup, -1) {
 		if hasCJK(m[1]) {
 			candidates[m[1]] = "属性"
@@ -169,7 +178,8 @@ func TestConsoleI18nCoverage(t *testing.T) {
 			strings.Join(missing, "\n  "))
 	}
 
-	// 允许名单只应该变短：已经补上的词条要从名单里删掉。
+	// The allowlist should only shrink: entries that are already translated must be
+	// removed from the list.
 	for text := range i18nMissingAllowlist {
 		if _, ok := dict[text]; ok {
 			t.Errorf("i18nMissingAllowlist 里的 %q 已经有词条了，请从名单中删除", text)
@@ -180,9 +190,11 @@ func TestConsoleI18nCoverage(t *testing.T) {
 	}
 }
 
-// TestConsoleI18nNoDuplicateKeys 防止手改字典时出现重复键。
+// TestConsoleI18nNoDuplicateKeys prevents duplicate keys when the dictionary is
+// edited by hand.
 //
-// JS 对象里重复键不报错，后者静默覆盖前者——表现是「改了词条但不生效」。
+// Duplicate keys in a JS object are not an error; the latter silently overrides the
+// former - the symptom is "changed an entry but it does not take effect".
 func TestConsoleI18nNoDuplicateKeys(t *testing.T) {
 	html := web.Scripts()
 	body := i18nDictBlock(t, html)
@@ -198,22 +210,26 @@ func TestConsoleI18nNoDuplicateKeys(t *testing.T) {
 	}
 }
 
-// TestConsoleI18nNoDeadEntries 是覆盖率棘轮的**反向**方向：词条必须在源码里
-// 真的被用到，否则就是死词条。
+// TestConsoleI18nNoDeadEntries is the **reverse** direction of the coverage ratchet:
+// an entry must actually be used in the source, otherwise it is dead.
 //
-// 为什么需要这条：功能下线（注册链路 / 指纹库 / 代理池输入框）时，源码删了
-// 但字典没人清理，词条会一直烂在里面。正向棘轮（覆盖率）只看「缺不缺」，
-// 对「多不多」完全无感 —— 2026-11-11 首次引入本测试时清掉了 9 条死词条。
+// Why this is needed: when a feature is retired (registration flow / fingerprint
+// library / proxy pool input), the source is deleted but nobody cleans the
+// dictionary, so entries rot in it forever. The forward ratchet (coverage) only
+// looks at "what is missing" and is completely blind to "what is extra" -
+// introducing this test on 2026-11-11 removed 9 dead entries.
 //
-// 判定方式：把字典块本身从源码里挖掉，剩下的 JS + 标记里出现该原文即算「在用」。
-// 字典里形如 {"a\":\"b\"} 的转义键先反转义再匹配，避免因为 JSON 示例里的
-// 反斜杠误判成死词条。
+// How it decides: remove the dictionary blocks from the source; if the remaining JS
+// + markup contains the source text, it counts as "in use". Escaped keys of the form
+// {"a\":\"b"} in the dictionary are unescaped before matching, so backslashes in the
+// JSON examples do not misclassify them as dead entries.
 func TestConsoleI18nNoDeadEntries(t *testing.T) {
 	script := web.Scripts()
 	dict := i18nDictionary(t, script)
-	// 挖掉字典：否则每个键都能在字典声明处匹配到自己。
-	// 同时去掉注释：注释里顺带提到某个词条（例如“阶段 A 的搬家”）不算文案在用 ——
-	// 第一版没去注释，把一个真死词条当成“还在用”放过了。
+	// Strip the dictionary: otherwise every key would match itself at its declaration.
+	// Also strip comments: an entry merely mentioned in a comment (for example "the
+	// phase A move") does not count as copy in use - the first version did not strip
+	// comments and let a genuinely dead entry pass as "still used".
 	rest := script
 	for _, block := range i18nDictBlocks(t, script) {
 		rest = strings.Replace(rest, block, "", 1)
@@ -234,9 +250,11 @@ func TestConsoleI18nNoDeadEntries(t *testing.T) {
 	}
 }
 
-// stripJSComments 去掉 // 与 /* */ 注释，字符串字面量与模板串原样保留。
+// stripJSComments removes // and /* */ comments, leaving string literals and template
+// strings untouched.
 //
-// 块注释里的换行会保留：控制台的契约测试要靠它从 `src` 直接数出行号。
+// Newlines inside block comments are preserved: the console contract test relies on
+// that to count line numbers directly from `src`.
 func stripJSComments(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))
@@ -294,7 +312,7 @@ func stripJSComments(src string) string {
 	return b.String()
 }
 
-// stripHTMLComments 去掉 <!-- ... -->，理由同上。
+// stripHTMLComments removes <!-- ... --> for the same reason.
 func stripHTMLComments(src string) string {
 	for {
 		start := strings.Index(src, "<!--")

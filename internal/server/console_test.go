@@ -7,21 +7,23 @@ import (
 	"testing"
 )
 
-// 控制台是内嵌单页，改动容易静默回归（例如前后端字段名不一致）。
-// 这里守住几条关键约定：主题、分页、以及模型字段的 camelCase。
+// The console is an embedded single page, and changes regress silently easily (e.g. mismatched field
+// names between frontend and backend). These tests guard a few key conventions: theme, pagination,
+// and camelCase model fields.
 
-// consoleSource 返回「标记 + 全部 ES module 脚本 + 样式」的拼接。
+// consoleSource returns the concatenation of "markup + all ES module scripts + styles".
 //
-// 前端已拆成多个 module：只扫 index.html 会让「某函数名 / 选择器存在」
-// 这类断言静默失效（测试全绿但检查早已落空）。
+// The frontend has been split into multiple modules: scanning only index.html would silently disable
+// assertions like "function name / selector exists" (tests stay green while the checks no longer
+// cover anything).
 func consoleSource() string {
 	return consoleMarkup() + "\n" + consoleStyle() + "\n" + web.Scripts()
 }
 
-// consoleMarkup 只返回页面标记（id 定义、标签页结构这类纯标记断言）。
+// consoleMarkup returns only the page markup (pure-markup assertions such as id definitions and tab structure).
 func consoleMarkup() string { return string(web.HTML) }
 
-// consoleStyle 返回抽出的样式表。
+// consoleStyle returns the extracted stylesheet.
 func consoleStyle() string { return string(web.CSS) }
 
 func TestConsoleHTMLContracts(t *testing.T) {
@@ -50,7 +52,7 @@ func TestConsoleHTMLContracts(t *testing.T) {
 		}
 	}
 
-	// 模型目录走 camelCase（deepai.Model 的 json tag），页面必须按 camelCase 取值。
+	// The model catalog uses camelCase (deepai.Model's json tags); the page must read values by camelCase.
 	for _, field := range []string{"m.theosPerRequest", "m.contextWindow", "m.maxTokens", "m.input", "m.premier"} {
 		if !strings.Contains(html, field) {
 			t.Errorf("模型目录未按 json tag 取值：%s", field)
@@ -63,14 +65,14 @@ func TestConsoleHTMLContracts(t *testing.T) {
 	}
 }
 
-// 分页默认 20，且只在 20/50/100 里取值。
+// Pagination defaults to 20 and only allows 20/50/100.
 func TestConsoleDefaultPageSize(t *testing.T) {
 	html := consoleSource()
-	// 分页状态已搬到 js/state.js：默认值在 ui 对象里。
+	// Pagination state has moved to js/state.js: the default lives in the ui object.
 	if !strings.Contains(html, "acctPageSize: 20") {
 		t.Error("分页默认值应为 20")
 	}
-	// 只看 acctSize 这个 select 内部的选项（页面别处也有 value="200" 的控件）。
+	// Look only at options inside the acctSize select (other page controls also have value="200").
 	start := strings.Index(html, `id="acctSize"`)
 	if start < 0 {
 		t.Fatal("找不到 acctSize 选择框")
@@ -90,14 +92,15 @@ func TestConsoleDefaultPageSize(t *testing.T) {
 	}
 }
 
-// 脚本引用的每个 DOM id 都必须在标记里存在。
+// Every DOM id referenced by a script must exist in the markup.
 //
-// 这是最容易静默回归的一类改动：改标记时漏一个 id，控制台不报错，
-// 只是某个功能永远不生效（按钮点了没反应、渲染函数写进 null）。
+// This is the easiest kind of change to regress silently: miss one id while editing markup and the
+// console doesn't error-some feature just never works (button clicks do nothing, render functions
+// write into null).
 func TestConsoleScriptIDsExist(t *testing.T) {
-	// 按页面分组校验：login.js 的 DOM 在 login.html 里，不在 index.html 里。
-	// 拆页面时最容易出的错就是「脚本引用了另一个页面的 id」，那种功能
-	// 永远不生效（按钮点了没反应、渲染函数写进 null）。
+	// Validate grouped by page: login.js's DOM lives in login.html, not index.html.
+	// The most common mistake when splitting pages is "a script references another page's id"; that
+	// feature then never works (button clicks do nothing, render functions write into null).
 	indexIDs := idsInMarkup(consoleMarkup())
 	loginIDs := idsInMarkup(string(web.LoginHTML))
 
@@ -127,7 +130,7 @@ func TestConsoleScriptIDsExist(t *testing.T) {
 	}
 }
 
-// idsInMarkup 收集标记里定义过的 id。
+// idsInMarkup collects ids defined in the markup.
 func idsInMarkup(markup string) map[string]bool {
 	defined := map[string]bool{}
 	for _, m := range regexp.MustCompile(`id="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(markup, -1) {
@@ -136,7 +139,7 @@ func idsInMarkup(markup string) map[string]bool {
 	return defined
 }
 
-// idsReferencedBy 收集脚本里通过 $("#x") / getElementById / querySelector 取过的 id。
+// idsReferencedBy collects ids fetched by scripts via $("#x") / getElementById / querySelector.
 func idsReferencedBy(script string) map[string]bool {
 	refs := map[string]bool{}
 	for _, re := range []*regexp.Regexp{
@@ -151,10 +154,10 @@ func idsReferencedBy(script string) map[string]bool {
 	return refs
 }
 
-// 每个 data-tab 必须有对应的 #tab-xxx 面板，且 <section> 数量与之相等。
+// Every data-tab must have a corresponding #tab-xxx panel, and the <section> count must match.
 //
-// 脚本用 querySelectorAll("section") 切页：多出来的 <section>（比如把卡片
-// 写成 section）会被当成标签页，切页时被摘掉 .on 而一起隐藏。
+// The script switches pages with querySelectorAll("section"): extra <section> elements (e.g. a card
+// written as a section) are treated as tabs, lose .on during page switches, and get hidden with them.
 func TestConsoleTabsHavePanels(t *testing.T) {
 	html := consoleSource()
 	tabs := regexp.MustCompile(`data-tab="([A-Za-z0-9_-]+)"`).FindAllStringSubmatch(html, -1)
@@ -171,7 +174,7 @@ func TestConsoleTabsHavePanels(t *testing.T) {
 	}
 }
 
-// 外壳布局与响应式收列的关键钩子。
+// Key hooks for the shell layout and responsive column collapsing.
 func TestConsoleShellHooks(t *testing.T) {
 	html := consoleSource()
 	for name, needle := range map[string]string{
@@ -189,10 +192,11 @@ func TestConsoleShellHooks(t *testing.T) {
 	}
 }
 
-// 抽屉菜单 / 表头排序 / 中英双语的关键钩子。
+// Key hooks for the drawer menu / table header sorting / bilingual Chinese-English UI.
 //
-// 这三块都是「静默失效」型功能：字典少一条不会报错，只是英文界面里
-// 冒出一句中文；表头没有 wireSort 也不会报错，只是点了没反应。
+// All three are "silent failure" features: a missing dictionary entry doesn't error, it just lets a
+// Chinese sentence pop up in the English UI; a table header without wireSort doesn't error, clicking
+// just does nothing.
 func TestConsoleFeatures(t *testing.T) {
 	html := consoleSource()
 
@@ -218,7 +222,7 @@ func TestConsoleFeatures(t *testing.T) {
 		}
 	}
 
-	// 每张声明了 data-sort 的表都必须有对应的 wireSort，否则点了没反应。
+	// Every table that declares data-sort must have a matching wireSort, otherwise clicking does nothing.
 	for _, tbl := range []string{"acctTable", "modelTable", "keyTable", "logTable"} {
 		if !strings.Contains(html, `id="`+tbl+`"`) {
 			t.Errorf("表 %s 缺少 id（排序接线依赖它）", tbl)
@@ -229,11 +233,12 @@ func TestConsoleFeatures(t *testing.T) {
 	}
 }
 
-// 控制台要跟后端能力对齐：筛选、存量治理动作、K/M 单位都不能悄悄丢。
+// The console must stay aligned with backend capabilities: filters, lifecycle actions, and K/M units
+// must not be silently dropped.
 func TestConsoleBackendParity(t *testing.T) {
 	html := consoleSource()
 
-	// 筛选：后端 AccountPage / QueryLogs 支持的参数，前端必须真的发出去。
+	// Filters: the frontend must actually send the parameters supported by backend AccountPage / QueryLogs.
 	for _, needle := range []string{
 		`id="acctFilters"`, `id="acctGroup"`, `id="acctStatus"`, `id="acctQuery"`,
 		`id="logFilters"`, `id="logEndpoint"`, `id="logAccount"`, `id="logMinStatus"`,
@@ -245,14 +250,14 @@ func TestConsoleBackendParity(t *testing.T) {
 		}
 	}
 
-	// 存量治理 / 密钥分组：后端 action 名必须与前端一致。
+	// Lifecycle actions / key grouping: backend action names must match the frontend.
 	for _, action := range []string{"assign-proxy", "assign-machine", "set-group", "mark-verified"} {
 		if !strings.Contains(html, `"`+action+`"`) {
 			t.Errorf("控制台缺少 action=%s 的入口", action)
 		}
 	}
 
-	// 单位压缩：Token / 字符走 fmtCompact，且 KPI 与日志都在用。
+	// Unit compaction: tokens / characters go through fmtCompact, and both KPI and logs use it.
 	if !strings.Contains(html, "function fmtCompact(") {
 		t.Fatal("缺少 fmtCompact")
 	}
@@ -266,15 +271,16 @@ func TestConsoleBackendParity(t *testing.T) {
 		}
 	}
 
-	// 严格模型模式开关要读到后端字段。
+	// The strict model mode toggle must read the backend field.
 	if !strings.Contains(html, `strict_model`) {
 		t.Error("设置页未接 strict_model")
 	}
 }
 
-// 主题按钮与登录链接是两组容易回退的 UI 约定：
-//   - 主题图标是内联 SVG（不再用 emoji），文案仍走 i18n 的「深色 / 浅色」；
-//   - 浏览器登录面板要能把登录链接复制走（绝对地址），供另一个浏览器/机器打开。
+// The theme button and login link are two UI conventions that regress easily:
+//   - The theme icon is inline SVG (no longer emoji); labels still use the i18n "dark / light" strings;
+//   - The browser login panel must allow copying the login link (absolute address) for opening in
+//     another browser/machine.
 func TestConsoleThemeAndLoginLink(t *testing.T) {
 	html := consoleSource()
 
@@ -291,7 +297,7 @@ func TestConsoleThemeAndLoginLink(t *testing.T) {
 		}
 	}
 
-	// 图标改成 SVG 之后，applyTheme 不能再往按钮里塞 emoji 文本。
+	// After the icon became SVG, applyTheme must no longer inject emoji text into the button.
 	if strings.Contains(html, "☀️ 浅色") || strings.Contains(html, "🌙 深色") {
 		t.Error("主题按钮仍残留 emoji 文案")
 	}
@@ -299,7 +305,7 @@ func TestConsoleThemeAndLoginLink(t *testing.T) {
 		t.Error("applyTheme 应只切换「浅色 / 深色」文案，图标交给 SVG 控制显隐")
 	}
 
-	// 复制的是网关绝对地址，不能只写相对路径（换页面/换机器就失效）。
+	// Copy the gateway's absolute address; a relative path alone breaks when changing pages/machines.
 	if !strings.Contains(html, "location.origin") {
 		t.Error("登录链接应拼成绝对地址（location.origin）")
 	}

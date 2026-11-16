@@ -14,18 +14,18 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// TestReqLogDoneIsIdempotent 锁死「同一个请求只记一条日志」。
+// TestReqLogDoneIsIdempotent locks down that "the same request is logged only once".
 //
-// 各 handler 用值类型 reqLog 传递，done 可能在多个分支被各调一次（提前返回 +
-// defer 兜底）。没有幂等标记时，一个请求会被记成两条，吞吐与错误率全部翻倍。
+// Each handler passes reqLog by value, so done may be called once in multiple branches (early return +
+// defer fallback). Without an idempotency flag, one request gets logged twice, doubling both throughput and error rate.
 func TestReqLogDoneIsIdempotent(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	rl := s.newReqLog("sk-test", nil, "glm-5.3-flash", "chat", false, time.Now(), 12)
 
 	rl.done(3, Usage{PromptTokens: 5, CompletionTokens: 2}, nil)
-	rl.done(3, Usage{PromptTokens: 5, CompletionTokens: 2}, nil) // 第二次应被忽略
+	rl.done(3, Usage{PromptTokens: 5, CompletionTokens: 2}, nil) // The second call should be ignored
 	copied := rl
-	copied.done(3, Usage{}, nil) // 副本共享同一标记，同样被忽略
+	copied.done(3, Usage{}, nil) // The copy shares the same flag and is likewise ignored
 
 	logs := s.Store.Logs(10)
 	if len(logs) != 1 {
@@ -36,10 +36,10 @@ func TestReqLogDoneIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestStatusOfUsesUpstreamStatusCode 保证日志里的状态码与客户端收到的一致。
+// TestStatusOfUsesUpstreamStatusCode ensures the status code in the log matches what the client receives.
 //
-// 旧实现把所有错误一律记成 502，而上游的 400 / 426 / 429 是会被 writeUpstreamErr
-// 原样回给客户端的：控制台的「状态 ≥」筛选与错误归因因此长期失真。
+// The old implementation logged all errors as 502, while upstream 400 / 426 / 429 are passed through by writeUpstreamErr
+// verbatim to the client: the console's "status ≥" filter and error attribution were therefore distorted for a long time.
 func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -52,9 +52,9 @@ func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 		{"上游 429", &deepai.HTTPError{Op: "聊天", Status: 429}, 429},
 		{"包装后的上游 403", wrap(&deepai.HTTPError{Op: "聊天", Status: 403}), 403},
 		{"普通错误回 502", errors.New("boom"), http.StatusBadGateway},
-		// 客户端断开 / 我们自己的超时都要跟 writeUpstreamErr 的实际响应对齐：
-		// 前者什么都不写（连接已经没了），后者写 504。以前一律记 502，会让
-		// 「上游 5xx」与「客户端走了」「我们超时了」在日志里混成一堆。
+		// Client disconnects / our own timeouts must align with writeUpstreamErr's actual response:
+		// the former writes nothing (the connection is already gone), the latter writes 504. Previously everything was logged as 502, which made
+		// "upstream 5xx", "client left", and "we timed out" all blur together in the logs.
 		{"上下文取消记 499", context.Canceled, store.StatusClientGone},
 		{"包装后的上下文取消", wrap(context.Canceled), store.StatusClientGone},
 		{"上下文超时记 504", context.DeadlineExceeded, http.StatusGatewayTimeout},
@@ -69,13 +69,13 @@ func TestStatusOfUsesUpstreamStatusCode(t *testing.T) {
 	}
 }
 
-// wrap 给错误套一层 %w，验证 statusOf 用 errors.As 而不是类型断言。
+// wrap adds a %w layer to the error; verify that statusOf uses errors.As rather than a type assertion.
 func wrap(err error) error { return errors.Join(errors.New("外层"), err) }
 
-// TestPassthroughNonJSONIsLogged 覆盖「上游回的既不是 JSON 也不是流」的分支。
+// TestPassthroughNonJSONIsLogged covers the branch where "the upstream response is neither JSON nor a stream".
 //
-// 这个分支曾经直接 return：客户端拿到原文 200，但日志里**一条记录都没有**，
-// 于是「上游偶发返回 HTML 登录页」在控制台完全看不见。
+// This branch used to return directly: the client got the raw 200, but there was **not a single log entry**,
+// so "upstream occasionally returns an HTML login page" was completely invisible in the console.
 func TestPassthroughNonJSONIsLogged(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

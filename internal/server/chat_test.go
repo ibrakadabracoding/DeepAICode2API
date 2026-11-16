@@ -38,7 +38,7 @@ func TestChatNonStreamTransform(t *testing.T) {
 	if msg["reasoning_content"] != "思考中" {
 		t.Fatalf("应补 reasoning_content 兼容字段: %#v", msg)
 	}
-	// 对外模型名必须回到用户传入的解析结果，而不是上游 ID。
+	// The external model name must match the user's parsed input, not the upstream ID.
 	if out["model"] == "glm-5.3-flash" {
 		t.Log("model 回写为目录模型 ID（允许）")
 	}
@@ -100,7 +100,7 @@ func TestChatStreamPassesThrough(t *testing.T) {
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("应保留 [DONE] 终止帧:\n%s", body)
 	}
-	// 上游心跳必须原样透传，否则长响应会被中间层掐断。
+	// Upstream heartbeats must pass through unchanged; otherwise long responses get cut off by intermediaries.
 	if !strings.Contains(body, ": keep-alive") {
 		t.Fatalf("心跳注释应被透传:\n%s", body)
 	}
@@ -118,7 +118,7 @@ func TestChatUpstreamErrorPropagates(t *testing.T) {
 
 	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
 		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
-	// 400 属于请求问题，不重试，状态码原样回传。
+	// 400 indicates a request problem; do not retry, and return the status code as-is.
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("状态码 = %d，期望 400：%s", rec.Code, rec.Body.String())
 	}
@@ -127,15 +127,15 @@ func TestChatUpstreamErrorPropagates(t *testing.T) {
 	}
 }
 
-// 上游在缺省 stream 字段时默认按 SSE 返回；OpenAI 规范里缺省等价于 false。
-// 两者不一致会让“没写 stream 的非流式请求”拿到 data: 帧而解析失败。
+// When the stream field is absent, the upstream defaults to SSE; in the OpenAI spec, absent is equivalent to false.
+// That mismatch makes a non-streaming request that omitted stream receive data: frames and fail to parse.
 func TestChatSendsExplicitStreamFalse(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
 	})
 	s, key := newTestServer(t, u)
 
-	// 故意不传 stream。
+	// Deliberately omit stream.
 	rec := do(t, s, http.MethodPost, "/v1/chat/completions", key,
 		`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK {
@@ -164,7 +164,8 @@ func TestChatSendsExplicitStreamTrue(t *testing.T) {
 	}
 }
 
-// 上游回 SSE 但网关按非流式处理时，错误信息要能定位（曾只剩“不是合法 JSON”）。
+// When the upstream returns SSE but the gateway treats it as non-streaming, the error message must pinpoint the cause
+// (it once said only "not valid JSON").
 func TestChatNonJSONUpstreamIsDiagnosable(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -182,7 +183,8 @@ func TestChatNonJSONUpstreamIsDiagnosable(t *testing.T) {
 	}
 }
 
-// 上游 0.3.19 的请求体校验：400 形状拒绝后按桌面端形状（补 system + 字段白名单）同号重试一次。
+// Upstream 0.3.19 request-body validation: after a 400 shape rejection, retry once on the same account
+// using the desktop shape (add system + field allowlist).
 func TestChatBodyRejectedRetriesWithDesktopShape(t *testing.T) {
 	var chatCalls atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +213,7 @@ func TestChatBodyRejectedRetriesWithDesktopShape(t *testing.T) {
 		t.Fatalf("应重试一次，实际上游 chat 调用 %d 次", chatCalls.Load())
 	}
 
-	// 第二次请求体必须是桌面端形状：补了 system、剔除了白名单外字段。
+	// The second request body must have the desktop shape: system added, non-allowlisted fields stripped.
 	last := u.last(t)
 	if last.Path != deepai.ModelBasePath+deepai.PathChat {
 		t.Fatalf("最后一次上游路径 = %q", last.Path)
@@ -228,8 +230,9 @@ func TestChatBodyRejectedRetriesWithDesktopShape(t *testing.T) {
 	}
 }
 
-// 上游 2026-11-13 起把「请求体形状」拒绝的文案换成了 "This request cannot be accepted."。
-// 若只认旧文案，相同的门槛会直接透传 400，调用方拿不到兜底重试。
+// Since 2026-11-13 the upstream changed the "request body shape" rejection text to "This request cannot be accepted.".
+// If only the old text is recognized, the same threshold passes the 400 straight through and the caller loses the
+// fallback retry.
 func TestChatBodyRejectedRetriesWithNewMessage(t *testing.T) {
 	var chatCalls atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -259,8 +262,9 @@ func TestChatBodyRejectedRetriesWithNewMessage(t *testing.T) {
 	}
 }
 
-// 上游文案再次变化时，400 + code=invalid_request_error 也要触发一次形状回退。
-// 这是 2026-11-15 加的 code 兜底：只认两句话术，下一次换文案就得再改代码。
+// If the upstream wording changes again, 400 + code=invalid_request_error must also trigger one shape fallback.
+// This is the code fallback added on 2026-11-15: recognizing only two phrasings means the next wording change
+// requires another code change.
 func TestChatBodyRejectedRetriesOnInvalidRequestCode(t *testing.T) {
 	var chatCalls atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +294,8 @@ func TestChatBodyRejectedRetriesOnInvalidRequestCode(t *testing.T) {
 	}
 }
 
-// social_login_required 是账号级策略拦截：回传后账号落 blocked，后续调度跳过。
+// social_login_required is an account-level policy block: after it is returned, the account is persisted as blocked
+// and later scheduling skips it.
 func TestSocialLoginBlocksAccount(t *testing.T) {
 	var chatCalls atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {

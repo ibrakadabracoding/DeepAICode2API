@@ -8,34 +8,34 @@ import (
 	"strings"
 )
 
-// --- 上游 SSE 读帧 ---
+// --- Upstream SSE frame reading ---
 
-// sseFrame 是一条上游 SSE 帧里与业务相关的内容。
+// sseFrame holds the business-relevant content of one upstream SSE frame.
 //
-// 网关同时存在两类消费场景：
-//   - 透传（chat / responses passthrough）：需要事件名、注释帧、原始 data，
-//     以便原样转发上游扩展事件与心跳；
-//   - 协议转换（anthropic / responses-as-chat）：只关心解析后的 JSON。
+// The gateway has two consumption scenarios at the same time:
+// - Passthrough (chat / responses passthrough): needs event name, comment frames, raw data,
+// so that upstream extension events and heartbeats can be forwarded as-is;
+// - Protocol conversion (anthropic / responses-as-chat): only cares about the parsed JSON.
 //
-// 用一个结构体同时覆盖两者，避免每个 handler 各写一遍读帧循环。
+// Use one struct to cover both, avoiding each handler writing its own frame-reading loop.
 type sseFrame struct {
-	// Comment 非空表示注释 / 心跳帧（以 ":" 开头），透传时用于维持客户端连接。
+	// A non-empty Comment indicates a comment / heartbeat frame (starting with ":"), used to keep the client connection alive during passthrough.
 	Comment string
-	// Event 是 "event:" 字段的值（Anthropic / Responses 事件流需要）。
+	// Event is the value of the "event:" field (required by Anthropic / Responses event streams).
 	Event string
-	// Data 是 "data:" 之后的原始内容（已去首尾空白）。
+	// Data is the raw content after "data:" (leading and trailing whitespace trimmed).
 	Data string
-	// Object 是 Data 的 JSON 解析结果；解析失败或非对象时为 nil。
+	// Object is the JSON parse result of Data; nil if parsing fails or it is not an object.
 	Object map[string]any
 }
 
-// sseDone 是 SSE 流的显式结束标记。
+// sseDone is the explicit end marker of an SSE stream.
 const sseDone = "[DONE]"
 
-// forEachSSEFrame 逐帧解析上游 SSE，把每一帧交给 fn；fn 返回 false 时停止。
+// forEachSSEFrame parses upstream SSE frame by frame and passes each frame to fn; stops when fn returns false.
 //
-// 统一了四个流式 handler 的读帧逻辑：data 前缀、[DONE] 终止、JSON 解析结果，
-// 以及 event: / 注释帧的透传信息。fn 返回 false 或读到 EOF 都算正常结束。
+// Unifies the frame-reading logic of the four streaming handlers: data prefix, [DONE] termination, JSON parse result,
+// and passthrough information for event: / comment frames. Returning false from fn or reading EOF both count as normal termination.
 func forEachSSEFrame(body io.Reader, fn func(f sseFrame) bool) error {
 	return readSSELines(body, func(line string) bool {
 		trimmed := strings.TrimSpace(line)
@@ -60,13 +60,13 @@ func forEachSSEFrame(body io.Reader, fn func(f sseFrame) bool) error {
 			return false
 		}
 		var obj map[string]any
-		_ = json.Unmarshal([]byte(data), &obj) // 解析失败时 Object 保持 nil
+		_ = json.Unmarshal([]byte(data), &obj) // Object remains nil when parsing fails
 		return fn(sseFrame{Data: data, Object: obj})
 	})
 }
 
-// forEachChatChunk 是 forEachSSEFrame 在 chat/completions 语义下的薄封装：
-// 只交付已解析的 JSON chunk，自动跳过心跳 / event: / [DONE] / 非法帧。
+// forEachChatChunk is a thin wrapper around forEachSSEFrame under chat/completions semantics:
+// it only delivers parsed JSON chunks and automatically skips heartbeats / event: / [DONE] / invalid frames.
 func forEachChatChunk(body io.Reader, fn func(chunk map[string]any) bool) error {
 	return forEachSSEFrame(body, func(f sseFrame) bool {
 		if f.Object == nil {
@@ -76,10 +76,10 @@ func forEachChatChunk(body io.Reader, fn func(chunk map[string]any) bool) error 
 	})
 }
 
-// readSSELines 逐行读取上游 SSE；回调返回 false 时停止。
+// readSSELines reads upstream SSE line by line; stops when the callback returns false.
 //
-// 刻意不复用 deepai.ReadSSE：那个实现按 SSE 规范把多行 data 合并后再分发，
-// 会丢失注释帧与 event: 行的原始形态，而网关的透传路径需要它们。
+// Deliberately does not reuse deepai.ReadSSE: that implementation merges multiple data lines per the SSE spec before dispatching,
+// Will lose the original form of comment frames and event: lines, while the gateway's passthrough path needs them.
 func readSSELines(body io.Reader, fn func(line string) bool) error {
 	br := bufio.NewReaderSize(body, 64*1024)
 	for {
@@ -98,20 +98,20 @@ func readSSELines(body io.Reader, fn func(line string) bool) error {
 	}
 }
 
-// --- chat completion 增量提取 ---
+// --- chat completion delta extraction ---
 
-// chatDelta 是一次 chat completion chunk 中与协议适配相关的增量内容。
+// chatDelta is the delta content related to protocol adaptation in a chat completion chunk.
 //
-// Anthropic 与 Responses 两条适配链路此前各自解析一遍
-// choices[0] → delta → reasoning/content/tool_calls，逻辑逐字相同；
-// 统一到这里后，适配器只负责把增量渲染成自己的事件格式。
+// The Anthropic and Responses adaptation paths previously each parsed it once
+// choices[0] → delta → reasoning/content/tool_calls, with identical logic word for word;
+// After unifying here, the adapter is only responsible for rendering the delta into its own event format.
 type chatDelta struct {
 	Reasoning string
 	Content   string
 	ToolCalls []chatToolDelta
 }
 
-// chatToolDelta 是一次工具调用的增量片段。
+// chatToolDelta is a delta fragment of a tool call.
 type chatToolDelta struct {
 	Index int
 	ID    string
@@ -119,9 +119,9 @@ type chatToolDelta struct {
 	Args  string
 }
 
-// chatChunkDelta 取出 chunk 首个 choice 的增量内容与 finish_reason。
+// chatChunkDelta extracts the delta content and finish_reason of the first choice in the chunk.
 //
-// finish 为空表示本帧没有结束原因；delta 字段可能全为空（例如仅带 usage 的尾帧）。
+// An empty finish means this frame has no finish reason; the delta field may be entirely empty (e.g., a trailing frame with only usage).
 func chatChunkDelta(chunk map[string]any) (chatDelta, string) {
 	var d chatDelta
 	choices, _ := chunk["choices"].([]any)

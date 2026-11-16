@@ -17,12 +17,13 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// 浏览器登录（RFC 8252 本机回调）与桌面端完全同款：
+// Browser login (RFC 8252 loopback callback) is exactly the same as the desktop client:
 //
-//	GET  https://api.deepai.org/deepai_code/desktop_auth/?state=…&port=…
-//	  → 浏览器完成登录后回调 http://127.0.0.1:<port>/auth-callback?code=…&state=…
-//	POST https://api.deepai.org/deepai_code/desktop_auth/exchange/  {"code": …}
-//	  → {api_key, username, is_pro}
+// GET https://api.deepai.org/deepai_code/desktop_auth/?state=...&port=...
+// → After the browser completes login, it calls back to http://127.0.0.1:<port>/auth-callback?code=...&state=...
+// POST https://api.deepai.org/deepai_code/desktop_auth/exchange/ {"code":...}
+//
+//	→ {api_key, username, is_pro}
 const loginTTL = 10 * time.Minute
 
 type loginResult struct {
@@ -39,11 +40,11 @@ type loginSession struct {
 
 	mu         sync.Mutex
 	result     *loginResult
-	exchanging bool // 已有一路在用 code 换 Key（本机回调与「粘贴回调 URL」互斥）
-	consumed   bool // 已入池并收尾；poll 与粘贴只允许一方完成收尾
+	exchanging bool // One path is already exchanging the code for a Key (loopback callback and "paste callback URL" are mutually exclusive)
+	consumed   bool // Already added to the pool and finalized; only one of poll and paste is allowed to finalize
 }
 
-// setResult 记录兑换结果；已有结果时不覆盖（先到先得）。
+// setResult records the exchange result; does not overwrite an existing result (first come, first served).
 func (s *loginSession) setResult(r *loginResult) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -54,17 +55,17 @@ func (s *loginSession) setResult(r *loginResult) bool {
 	return true
 }
 
-// snapshotResult 返回当前结果（nil 表示仍在等待）。
+// snapshotResult returns the current result (nil means still waiting).
 func (s *loginSession) snapshotResult() *loginResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.result
 }
 
-// beginExchange 抢占「用 code 换 Key」的唯一名额。
+// beginExchange claims the single slot for "exchange code for Key".
 //
-// 本机回调与粘贴回调 URL 是两条并行入口，而同一个 code 只能兑换一次
-// （上游对第二次报 400/401）。这里把兑换串行化，谁先拿到谁兑换。
+// The loopback callback and pasting the callback URL are two parallel entry points, but the same code can only be exchanged once
+// (the upstream returns 400/401 on the second attempt). Here the exchange is serialized: whoever gets it first performs the exchange.
 func (s *loginSession) beginExchange() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,7 +76,7 @@ func (s *loginSession) beginExchange() bool {
 	return true
 }
 
-// claim 收尾：返回本次结果并把会话标记为已消费（重复调用返回 nil）。
+// claim finalizes: returns this result and marks the session as consumed (repeated calls return nil).
 func (s *loginSession) claim() *loginResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -108,14 +109,14 @@ func (ls *loginSessions) put(s *loginSession) {
 func (ls *loginSessions) get(id string) *loginSession {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	// 顺手回收陈旧的兄弟会话（连同它们的回环监听）。
+	// Also reclaims stale sibling sessions (along with their loopback listeners).
 	//
-	// 只在 put 时清理不够：「发起登录 → 用户放弃 → 再也不发起」这条路径会让
-	// 会话与监听一直留着（每个占一个端口）。登录页每次轮询 / 打开都会走到这里，
-	// 相当于低频 janitor，不需要额外的后台 goroutine。
+	// Cleaning up only on put is not enough: the path "start login → user gives up → never starts again" would leave
+	// the session and listener around forever (each occupying a port). The login page hits this on every poll/open,
+	// acting as a low-frequency janitor, so no extra background goroutine is needed.
 	//
-	// 请求的那个会话即使已过期也原样返回：调用方需要区分「过期」（429/200+expired）
-	// 与「不存在」（404），不能在这里被吞成 nil。
+	// The requested session is returned as-is even if expired: callers need to distinguish "expired" (429/200+expired)
+	// from "not found" (404), so it must not be swallowed into nil here.
 	for k, v := range ls.m {
 		if k == id {
 			continue
@@ -145,7 +146,7 @@ func shutdownLoginServer(srv *http.Server) {
 	_ = srv.Shutdown(ctx)
 }
 
-// handleLoginStart 启动一次浏览器登录，返回可打开的 URL。
+// handleLoginStart starts a browser login and returns a URL that can be opened.
 func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -165,7 +166,7 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 			_, _ = cw.Write([]byte("Invalid sign-in callback."))
 			return
 		}
-		// 用户可能已经在控制台里粘贴同一段回调，谁先兑换谁算数。
+		// The user may have already pasted the same callback in the console; whoever exchanges first wins.
 		if !session.beginExchange() {
 			cw.WriteHeader(http.StatusConflict)
 			_, _ = cw.Write([]byte("This sign-in link was already used."))
@@ -186,8 +187,8 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 		_, _ = cw.Write([]byte("<h2>Signed in to DeepAI Code</h2><p>You can close this tab and return to the console.</p>"))
 	})
 
-	// 本机回调只是「自动收」的那条路；绑不上回环时（典型：Docker 里
-	// 127.0.0.1 属于容器，宿主机浏览器打不开）流程不能断，改用粘贴回调 URL。
+	// The loopback callback is only the "automatic capture" path; when the loopback cannot be bound (typically: in Docker
+	// 127.0.0.1 belongs to the container and the host browser cannot reach it), the flow must not break-fall back to pasting the callback URL.
 	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err != nil {
 		session.Port = fallbackLoginPort()
 	} else {
@@ -206,10 +207,10 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// fallbackLoginPort 在绑不上本机回环时给上游一个「看起来合法」的端口。
+// fallbackLoginPort gives the upstream a port that "looks valid" when it cannot bind to the local loopback.
 //
-// 上游只把这个值拼进 http://127.0.0.1:<port>/auth-callback；回调打不开时
-// 浏览器地址栏仍保留完整 URL（含 code 与 state），正好可以走粘贴回调。
+// The upstream only concatenates this value into http://127.0.0.1:<port>/auth-callback; when the callback cannot be opened
+// the browser address bar still retains the full URL (including code and state), which is exactly suitable for the paste callback flow.
 func fallbackLoginPort() int {
 	var b [2]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -218,10 +219,10 @@ func fallbackLoginPort() int {
 	return 45000 + (int(b[0])<<8|int(b[1]))%10000
 }
 
-// handleLoginOpen 跳转到上游登录页。
+// handleLoginOpen redirects to the upstream login page.
 //
-// 跳转目标完全由服务端根据会话里的 state/port 重建，并再次校验
-// scheme/host/path，绝不使用请求参数拼 URL。
+// The redirect target is reconstructed entirely by the server from the state/port in the session, and is re-validated
+// scheme/host/path, and request parameters are never used to construct the URL.
 func (s *Server) handleLoginOpen(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
@@ -250,7 +251,7 @@ func (s *Server) handleLoginOpen(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusFound)
 }
 
-// isSafeLoginURL 校验登录跳转目标是否落在配置的上游源上。
+// isSafeLoginURL verifies whether the login redirect target falls on the configured upstream origin.
 func isSafeLoginURL(raw, origin string) bool {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -266,7 +267,7 @@ func isSafeLoginURL(raw, origin string) bool {
 	return u.Path == "/deepai_code/desktop_auth/" || u.Path == "/deepai_code/desktop_auth"
 }
 
-// handleLoginPoll 轮询浏览器登录结果。
+// handleLoginPoll polls for the browser login result.
 func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -303,12 +304,12 @@ func (s *Server) handleLoginPoll(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, s.completeLogin(session))
 }
 
-// handleLoginCallback 用「粘贴回来的回调 URL」完成登录。
+// handleLoginCallback completes login using the "pasted-back callback URL".
 //
-// Docker / 远程部署时，上游把浏览器送到 http://127.0.0.1:<port>/auth-callback?code=…
-// —— 那个 127.0.0.1 是宿主机自己的回环，而监听在容器里（而且是随机会话端口，
-// 就算 -p 也没法映射到容器的回环地址），所以这一页必定打不开。但地址栏里的
-// code/state 是有效的：本接口替用户把 code 换成 Key 并完成入池，等价于本机回调。
+// In Docker / remote deployments, the upstream sends the browser to http://127.0.0.1:<port>/auth-callback?code=...
+// - that 127.0.0.1 is the host machine's own loopback, while the listener is inside the container (and on a random session port,
+// even with -p it cannot be mapped to the container's loopback address), so this page will definitely fail to open. But in the address bar
+// the code/state is valid: this endpoint exchanges the code for a Key on behalf of the user and completes adding it to the account pool, equivalent to a local callback.
 func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -355,7 +356,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	if xerr != nil {
 		s.finishLogin(session, nil, xerr)
-		_ = s.completeLogin(session) // 收尾：删会话、关本机监听
+		_ = s.completeLogin(session) // Cleanup: delete the session, close the local listener
 		status, msg := loginExchangeError(xerr)
 		httpx.WriteErr(w, status, msg, "invalid_request_error")
 		return
@@ -364,7 +365,7 @@ func (s *Server) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, s.completeLogin(session))
 }
 
-// loginExchangeError 把上游兑换失败翻译成控制台可直接展示的提示。
+// loginExchangeError translates upstream exchange failures into messages that can be displayed directly in the console.
 func loginExchangeError(err error) (int, string) {
 	var he *deepai.HTTPError
 	if errors.As(err, &he) {
@@ -379,10 +380,10 @@ func loginExchangeError(err error) (int, string) {
 	return http.StatusBadGateway, "兑换失败：" + errString(err)
 }
 
-// parseLoginCallback 从「粘贴的内容」里取出 code 与 state。
+// parseLoginCallback extracts code and state from the "pasted content".
 //
-// 接受两种形态：完整回调 URL（地址栏直接复制）与裸 query 串（只复制了 ? 后面）。
-// 只粘 code 会被拒：那样就拿不到 state，无法确认它属于本次登录。
+// Accepts two forms: a full callback URL (copied directly from the address bar) and a bare query string (only the part after ? was copied).
+// Pasting only code is rejected: state cannot be obtained that way, so it cannot be confirmed that it belongs to this login.
 func parseLoginCallback(callback, code, state string) (string, string, error) {
 	code, state = strings.TrimSpace(code), strings.TrimSpace(state)
 	raw := strings.TrimSpace(callback)
@@ -402,7 +403,7 @@ func parseLoginCallback(callback, code, state string) (string, string, error) {
 	return code, state, nil
 }
 
-// splitCallbackQuery 兼容「完整 URL」与「只有 query 串」两种粘贴形态。
+// splitCallbackQuery supports both paste forms: a "full URL" and a "query string only".
 func splitCallbackQuery(raw string) (string, string, bool) {
 	switch {
 	case strings.Contains(raw, "://"):
@@ -422,16 +423,16 @@ func splitCallbackQuery(raw string) (string, string, bool) {
 	return "", "", false
 }
 
-// completeLogin 把一次已换回凭据的登录收尾：入池 + 探测 + 关闭会话。
+// completeLogin finalizes a login for which credentials have already been exchanged: add to account pool + probe + close session.
 //
-// 轮询与本机回调驱动它，粘贴回调 URL 也驱动它；claim 保证同一个会话
-// 只会入池一次（否则并发两条入口会把同一个号写两遍、探活两次）。
+// Rotation and the local callback drive it; pasting the callback URL also drives it; claim guarantees the same session
+// is only added to the pool once (otherwise two concurrent entry points would write the same account twice and probe liveness twice).
 func (s *Server) completeLogin(session *loginSession) map[string]any {
 	result := session.claim()
 	if result == nil {
 		return map[string]any{"status": "pending"}
 	}
-	// 无论成败，会话都到此结束：code 是一次性的，监听端口也不该继续开着。
+	// Regardless of success or failure, the session ends here: the code is one-time, and the listening port should not stay open either.
 	s.Login.remove(session.ID)
 	shutdownLoginServer(session.srv)
 
@@ -442,15 +443,15 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 	if err != nil {
 		return map[string]any{"status": "error", "error": err.Error()}
 	}
-	// 浏览器登录（含 Google/Apple）只换来 API Key，不带机器指纹。若沿用本机
-	// 指纹，多个号会共用同一份每日免费额度，只有第一个能领到；入池时补一个
-	// 独立 UUID，与 action=enroll 的规则保持一致。
+	// Browser login (including Google/Apple) only yields an API Key, without a machine fingerprint. If the local
+	// fingerprint is reused, multiple accounts would share the same daily free quota, and only the first one can claim it; when adding to the pool, supplement an
+	// independent UUID, consistent with the rules of action=enroll.
 	if strings.TrimSpace(acct.MachineID) == "" {
 		acct.MachineID = deepai.NewMachineUUID()
 	}
-	// 浏览器登录默认走直连；同一直连 IP 的每日免费额度是共享的，
-	// 配了代理池就按轮询分一个出口，避免多号挤在同一个 IP 上。
-	// 必须在 UpsertAccount 前写入：入池后的探活会直接复用它。
+	// Browser login uses a direct connection by default; the daily free quota is shared for the same direct-connection IP,
+	// so if a proxy pool is configured, assign an egress by rotation to avoid multiple accounts crowding onto the same IP.
+	// Must be written before UpsertAccount: the liveness probe after joining the pool will reuse it directly.
 	if strings.TrimSpace(acct.Proxy) == "" {
 		if pool := s.enrollProxyPool(); pool.Len() > 0 {
 			acct.Proxy = pool.Next()
@@ -466,7 +467,7 @@ func (s *Server) completeLogin(session *loginSession) map[string]any {
 	}
 }
 
-// finishLogin 记录兑换结果并唤醒等待方（首个结果生效）。
+// finishLogin records the redemption result and wakes the waiter (the first result takes effect).
 func (s *Server) finishLogin(session *loginSession, creds *deepai.Credentials, err error) {
 	session.setResult(&loginResult{Creds: creds, Err: errString(err)})
 }

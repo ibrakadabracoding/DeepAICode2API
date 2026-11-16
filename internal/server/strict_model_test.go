@@ -9,10 +9,10 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// 严格模式：未识别的模型名直接 404，不静默换成默认模型。
+// Strict mode: unrecognized model names return 404 directly instead of silently falling back to the default model.
 //
-// 这条行为的存在意义是「测得准」：宽松回落会把 gpt-6-sol 这类拼写变成
-// glm-5.3-flash，调用方以为在测 A，实际跑的是 B。
+// The point of this behavior is "measured accurately": lenient fallback would turn a typo like gpt-6-sol into
+// glm-5.3-flash, so the caller thinks they are testing A while B is actually running.
 func TestStrictModelRejectsUnknown(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
@@ -35,14 +35,14 @@ func TestStrictModelRejectsUnknown(t *testing.T) {
 		t.Fatalf("未识别的模型不应打到上游，实际 %d 次", hits)
 	}
 
-	// 目录内的模型照常放行。
+	// Models in the catalog are allowed through as usual.
 	rec = do(t, s, http.MethodPost, "/v1/chat/completions", key,
 		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("目录内模型应通过，状态码 = %d：%s", rec.Code, rec.Body.String())
 	}
 
-	// Anthropic 与 Responses 两条协议同样生效，且保持各自的错误形状。
+	// The same applies to both the Anthropic and Responses protocols, while preserving their respective error shapes.
 	rec = do(t, s, http.MethodPost, "/v1/messages", key,
 		`{"model":"gpt-6-sol","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"type":"error"`) {
@@ -55,7 +55,7 @@ func TestStrictModelRejectsUnknown(t *testing.T) {
 	}
 }
 
-// 关闭严格模式时保持原有回落语义（开箱即用）。
+// When strict mode is off, keep the original fallback semantics (works out of the box).
 func TestLooseModelStillFallsBack(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
@@ -72,7 +72,7 @@ func TestLooseModelStillFallsBack(t *testing.T) {
 	}
 }
 
-// 未知模型名要带上可执行的提示：相近候选 + 别名入口。
+// Unknown model names should include actionable hints: similar candidates + alias entry points.
 func TestUnknownModelMessageSuggests(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.StrictModel = true })

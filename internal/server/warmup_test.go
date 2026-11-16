@@ -9,11 +9,11 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// modelsForWarmup 是 /models 的最小合法响应：FetchModels 要求非空目录。
+// modelsForWarmup is the minimal valid response for /models: FetchModels requires a non-empty catalog.
 const modelsForWarmup = `{"models":[{"id":"m1","name":"M1","reasoning":false,` +
 	`"input":["text"],"contextWindow":1000,"maxTokens":100,"theosPerRequest":"0"}],"default":"m1"}`
 
-// newWarmupUpstream 起一个只认 /models 的假上游。
+// newWarmupUpstream starts a fake upstream that only recognizes /models.
 func newWarmupUpstream(t *testing.T) *upstream {
 	t.Helper()
 	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -38,13 +38,13 @@ func countPath(u *upstream, path string) int {
 	return n
 }
 
-// TestWarmUpstreamPrimesDistinctEgresses 锁住「同一出口只预热一次」：
-// 号池里 14 个账号往往只有几个出口，按账号预热会把代理打爆并拖慢启动。
+// TestWarmUpstreamPrimesDistinctEgresses locks in "warm up each egress only once":
+// The 14 accounts in the account pool often share only a few egresses; warming up per account would hammer the proxy and slow startup.
 func TestWarmUpstreamPrimesDistinctEgresses(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
 
-	// 再补两个「直连」账号 + 一个停用账号：出口集合仍然是 {""}。
+	// Add two "direct" accounts plus one disabled account: the egress set is still {""}.
 	for _, id := range []string{"acc-2", "acc-3"} {
 		s.Store.UpsertAccount(&deepai.Account{ID: id, Name: id, APIKey: "k-" + id, Enabled: true, Status: "ok"})
 	}
@@ -58,11 +58,11 @@ func TestWarmUpstreamPrimesDistinctEgresses(t *testing.T) {
 	}
 }
 
-// TestWarmUpstreamEmptyPool 空号池不应发任何请求，也不该报错。
+// TestWarmUpstreamEmptyPool: an empty account pool should send no requests and should not error.
 func TestWarmUpstreamEmptyPool(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
-	// Accounts() 返回副本，必须走 store 的变更入口才能真的停用。
+	// Accounts() returns a copy; you must go through the store's mutation entry point to actually disable it.
 	s.Store.UpdateAccounts(func(a *deepai.Account) bool {
 		a.Enabled = false
 		return true
@@ -76,7 +76,7 @@ func TestWarmUpstreamEmptyPool(t *testing.T) {
 	}
 }
 
-// TestWarmUpstreamFailureIsSilent 上游挂掉时预热只返回 0，不 panic、不阻塞。
+// TestWarmUpstreamFailureIsSilent: when the upstream is down, warmup just returns 0 - no panic, no blocking.
 func TestWarmUpstreamFailureIsSilent(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -88,8 +88,8 @@ func TestWarmUpstreamFailureIsSilent(t *testing.T) {
 	}
 }
 
-// 401 也算预热成功：上游 2026-11-14 起对 /models 要求 Api-Key，而预热只关心
-// DNS/TCP/TLS 与代理 CONNECT 是否打通 —— 401 已经证明链路是通的。
+// A 401 also counts as a successful warmup: since 2026-11-14 the upstream requires Api-Key for /models, and warmup only cares whether
+// DNS/TCP/TLS and the proxy CONNECT are reachable - a 401 already proves the link is up.
 func TestWarmUpstreamCountsUnauthorizedAsReachable(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -102,8 +102,8 @@ func TestWarmUpstreamCountsUnauthorizedAsReachable(t *testing.T) {
 	}
 }
 
-// 预热必须带账号凭据：/models 没有 Api-Key 只会 401，带上才真的把目录请求
-// 走完整链路（也顺带验证了「按出口挑代表账号」确实拿到了真实账号）。
+// Warmup must carry account credentials: without an Api-Key, /models only returns 401; with one, the catalog request actually goes
+// through the full link (which also incidentally verifies that "pick a representative account per egress" really gets a real account).
 func TestWarmUpstreamSendsAccountKey(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)

@@ -8,10 +8,10 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// --- Responses 流事件生成器 ---
+// --- Responses stream event generator ---
 
-// 本文件留在 server 包（而不是 gateway）：生成器直接写 *sseWriter，
-// 而 sseWriter 属于 HTTP 传输层。字段映射那部分已抽到 internal/gateway。
+// This file stays in the server package (not gateway): the generator writes directly to *sseWriter,
+// and sseWriter belongs to the HTTP transport layer. The field mapping part has been extracted to internal/gateway.
 
 type responsesStreamGen struct {
 	sw            *sseWriter
@@ -27,13 +27,13 @@ type responsesStreamGen struct {
 	reasoningBuf  strings.Builder
 	toolItems     map[int]*responsesToolState
 	finishReason  string
-	// output 按 output_index 记录最终条目：关闭顺序（文本 → 推理 → 工具）与
-	// output_index 不一定同序（上游可能先发工具再发文本），发出前必须按
-	// index 排序，否则 response.output 的顺序与流里报的 output_index 矛盾。
+	// output records final items by output_index: the close order (text → reasoning → tool) and
+	// output_index are not necessarily in the same order (upstream may send tool before text), so before emitting, must sort by
+	// index, otherwise the order of response.output contradicts the output_index reported in the stream.
 	output []responsesOutputItem
 }
 
-// responsesOutputItem 是最终 response.output 的一项（带排序键）。
+// responsesOutputItem is one item of the final response.output (with a sort key).
 type responsesOutputItem struct {
 	index int
 	item  map[string]any
@@ -88,7 +88,7 @@ func (g *responsesStreamGen) response(status string, usage Usage) map[string]any
 	return resp
 }
 
-// sortedOutput 按 output_index 返回最终输出条目（不改动内部切片）。
+// sortedOutput returns the final output items by output_index (without modifying the internal slice).
 func (g *responsesStreamGen) sortedOutput() []any {
 	items := make([]responsesOutputItem, len(g.output))
 	copy(items, g.output)
@@ -232,8 +232,8 @@ func (g *responsesStreamGen) closeText() {
 }
 
 func (g *responsesStreamGen) closeTools() {
-	// map 迭代顺序是随机的；最终 response.output 必须按 output_index 排列，
-	// 否则并行工具调用的输出顺序会随机变化。
+	// map iteration order is random; the final response.output must be ordered by output_index,
+	// otherwise the output order of parallel tool calls will vary randomly.
 	idxs := make([]int, 0, len(g.toolItems))
 	for idx := range g.toolItems {
 		idxs = append(idxs, idx)

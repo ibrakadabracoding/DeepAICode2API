@@ -47,7 +47,7 @@ func TestResponsesNonStreamMapping(t *testing.T) {
 		t.Fatalf("状态码 = %d：%s", rec.Code, rec.Body.String())
 	}
 
-	// --- 上游请求映射 ---
+	// --- Upstream request mapping ---
 	up := u.last(t)
 	if up.Path != "/deepai_code/chat/completions" {
 		t.Fatalf("非 responses 模型应改走 chat 端点，实际 %q", up.Path)
@@ -82,7 +82,7 @@ func TestResponsesNonStreamMapping(t *testing.T) {
 		t.Fatalf("工具映射错误: %#v", up.Payload["tools"])
 	}
 
-	// --- 网关响应：合成 Responses 对象 ---
+	// --- Gateway response: synthesized Responses object ---
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
 	if out["object"] != "response" || out["status"] != "completed" {
 		t.Fatalf("响应骨架错误: %#v", out)
@@ -187,7 +187,7 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 		t.Fatalf("末事件 = %q，期望 response.completed（全部：%v）", last, names)
 	}
 
-	// 必需的事件类型齐全。
+	// All required event types are present.
 	for _, want := range []string{
 		"response.output_item.added",
 		"response.output_text.delta",
@@ -206,7 +206,7 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 		}
 	}
 
-	// 文本增量拼起来应等于完整文本。
+	// Concatenating the text deltas should equal the full text.
 	var text strings.Builder
 	for _, e := range events {
 		if e.Event == "response.output_text.delta" {
@@ -219,7 +219,7 @@ func TestResponsesStreamEventSequence(t *testing.T) {
 		t.Fatalf("文本增量拼接 = %q", text.String())
 	}
 
-	// response.completed 必须带完整 response 对象。
+	// response.completed must carry the complete response object.
 	var completed map[string]any
 	for _, e := range events {
 		if e.Event == "response.completed" {
@@ -290,10 +290,10 @@ func TestResponsesFunctionCallStream(t *testing.T) {
 	}
 }
 
-// 透传路径必须把 model 改写成对外模型名。
+// The passthrough path must rewrite model to the external model name.
 //
-// 历史上的实现把改写作用在解析后的对象上，但写回客户端时用的是原始 data
-// 字符串，于是改写被静默丢弃——客户端会看到上游的内部模型名。
+// Historically, the implementation applied the rewrite to the parsed object, but wrote back to the client using the original data
+// string, so the rewrite was silently dropped-the client would see the upstream's internal model name.
 func TestResponsesPassthroughRewritesModel(t *testing.T) {
 	const internal = "upstream-internal-model"
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +309,7 @@ func TestResponsesPassthroughRewritesModel(t *testing.T) {
 		}
 	})
 	s, key := newTestServer(t, u)
-	// 目录里 api=openai-responses 的模型才会走透传分支。
+	// Only models with api=openai-responses in the catalog take the passthrough branch.
 	s.Store.SetModels([]deepai.Model{{ID: "resp-model", API: "openai-responses"}}, "resp-model")
 
 	rec := do(t, s, http.MethodPost, "/v1/responses", key,
@@ -342,8 +342,8 @@ func TestResponsesPassthroughRewritesModel(t *testing.T) {
 	}
 }
 
-// Responses 的 reasoning.effort 必须翻译成 chat 的 reasoning_effort：
-// 不映射就是静默把调用方的推理强度丢掉。
+// Responses' reasoning.effort must be translated to chat's reasoning_effort:
+// Without the mapping, the caller's reasoning effort is silently dropped.
 func TestResponsesReasoningEffortMapping(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -369,11 +369,11 @@ func TestResponsesReasoningEffortMapping(t *testing.T) {
 	}
 }
 
-// TestResponsesOutputSortedByOutputIndex 守住 response.output 的顺序。
+// TestResponsesOutputSortedByOutputIndex guards the order of response.output.
 //
-// 上游可能先给工具调用分片、后给正文（工具在前）；而 complete() 的关闭顺序
-// 固定是「文本 → 推理 → 工具」。若不按 output_index 重排，最终 output 会把
-// 文本排到工具前面，与流里报告的 output_index 自相矛盾。
+// The upstream may send tool call fragments before the body text (tools first); while complete()'s close order
+// is fixed as "text → reasoning → tools". Without reordering by output_index, the final output would place
+// text before tools, contradicting the output_index reported in the stream.
 func TestResponsesOutputSortedByOutputIndex(t *testing.T) {
 	rec := httptest.NewRecorder()
 	g := newResponsesStreamGen(newSSEWriter(rec), "m")

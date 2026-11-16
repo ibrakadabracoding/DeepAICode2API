@@ -12,10 +12,10 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// handleChatCompletions 是 /v1/chat/completions 的主入口。
+// handleChatCompletions is the main entry point for /v1/chat/completions.
 //
-// 上游本身就是 OpenAI 兼容接口，因此本网关做的是“带账号池与配额治理的
-// 透明代理”：改写模型名、注入 DeepAI 鉴权头、归一化思维链字段、记录用量。
+// The upstream itself is an OpenAI-compatible interface, so this gateway acts as a "transparent proxy with account pool and quota governance":
+// it rewrites the model name, injects the DeepAI authentication header, normalizes the reasoning chain fields, and records usage.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -41,9 +41,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	payload["model"] = model.ID
 	stream, _ := payload["stream"].(bool)
-	// 必须显式下发 stream=false：上游在缺省该字段时默认按 SSE 返回，
-	// 而 OpenAI 规范里缺省等价于 false，两者不一致会导致非流式请求拿到
-	// `data: {...}` 无法解析。
+	// stream=false must be sent explicitly: when this field is absent, the upstream defaults to returning SSE,
+	// whereas in the OpenAI spec the default is equivalent to false; this mismatch causes non-streaming requests to receive
+	// `data: {...}` that cannot be parsed.
 	payload["stream"] = stream
 	affinity := affinityFor(r, payload)
 	group := s.requestGroup(r)
@@ -58,7 +58,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	if !stream {
-		// 非流式请求加整体预算：MaxRetries × Retry-After 理论上可挂 90s 以上。
+		// Add an overall budget for non-streaming requests: MaxRetries × Retry-After can theoretically hang for over 90s.
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, nonStreamBudget)
 		defer cancel()
@@ -85,8 +85,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	var out map[string]any
 	if err := json.Unmarshal(rawResp, &out); err != nil {
-		// 上游偶尔会回非 JSON（HTML 网关页、纯文本限流提示、SSE 帧等）。
-		// 把响应类型与开头片段写进日志，否则只剩“不是合法 JSON”无从下手。
+		// The upstream occasionally returns non-JSON (HTML gateway pages, plain-text rate-limit notices, SSE frames, etc.).
+		// Log the response type and the leading fragment; otherwise all you have is "not valid JSON" with no way to investigate.
 		log.Printf("上游响应解析失败：account=%s status=%d ct=%q len=%d head=%q",
 			acctLabel(acct), resp.StatusCode, resp.Header.Get("Content-Type"), len(rawResp), headOf(rawResp, 160))
 		rl.done(0, Usage{}, err)
@@ -106,10 +106,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteRawJSON(w, http.StatusOK, encoded)
 }
 
-// transformChatResponse 归一化非流式响应。
+// transformChatResponse normalizes non-streaming responses.
 //
-// 上游把思维链放在 `reasoning`；这里补一份 OpenAI 生态常用的
-// `reasoning_content`（已存在则不覆盖），并把 model 改回对外模型名。
+// The upstream puts the reasoning chain in `reasoning`; here we add a copy in `reasoning_content`, which is common in the OpenAI ecosystem
+// (existing values are not overwritten), and change model back to the external model name.
 func transformChatResponse(m map[string]any, publicModel string) {
 	if publicModel != "" {
 		m["model"] = publicModel
@@ -126,7 +126,7 @@ func transformChatResponse(m map[string]any, publicModel string) {
 	}
 }
 
-// transformChatChunk 归一化单个流式 chunk。
+// transformChatChunk normalizes a single streaming chunk.
 func transformChatChunk(m map[string]any, publicModel string) {
 	if publicModel != "" {
 		m["model"] = publicModel
@@ -143,7 +143,7 @@ func transformChatChunk(m map[string]any, publicModel string) {
 	}
 }
 
-// addReasoningContent 在 reasoning 非空且 reasoning_content 缺失时补字段。
+// addReasoningContent adds the field when reasoning is non-empty and reasoning_content is missing.
 func addReasoningContent(obj map[string]any) {
 	if _, exists := obj["reasoning_content"]; exists {
 		return
@@ -153,7 +153,7 @@ func addReasoningContent(obj map[string]any) {
 	}
 }
 
-// streamChat 以 OpenAI SSE 格式流式转发。
+// streamChat forwards streaming in OpenAI SSE format.
 func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 	sw := newSSEWriter(w)
 
@@ -165,13 +165,13 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 
 	streamErr := forEachSSEFrame(body, func(f sseFrame) bool {
 		if f.Comment != "" {
-			// 上游心跳，原样透传以维持客户端连接。
+			// Upstream heartbeat, passed through as-is to keep the client connection alive.
 			_, _ = w.Write([]byte(f.Comment + "\n\n"))
 			sw.flush()
 			return true
 		}
 		if f.Data == "" {
-			return true // event: 帧在 chat 场景下无意义
+			return true // event: frames are meaningless in the chat scenario
 		}
 		if f.Data == sseDone {
 			sw.done()
@@ -179,7 +179,7 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 			return false
 		}
 		if f.Object == nil {
-			// 无法解析时按原文透传，避免破坏上游扩展事件。
+			// When parsing fails, pass through the original text to avoid breaking upstream extension events.
 			_, _ = w.Write([]byte("data: " + f.Data + "\n\n"))
 			sw.flush()
 			return true
@@ -204,13 +204,13 @@ func (s *Server) streamChat(w http.ResponseWriter, body io.Reader, rl reqLog) {
 		}
 	}
 	if !doneSent {
-		// 上游自己发了 [DONE] 时不要再补一个：重复的终止帧会让部分客户端报警。
+		// Do not append another [DONE] when the upstream already sent one: duplicate terminal frames cause some clients to raise alarms.
 		sw.done()
 	}
 	rl.done(outLen, usage, streamErr)
 }
 
-// acctLabel 返回用于日志的账号标识（不含密钥）。
+// acctLabel returns the account identifier for logging (excluding the key).
 func acctLabel(a *deepai.Account) string {
 	if a == nil {
 		return "-"
@@ -218,7 +218,7 @@ func acctLabel(a *deepai.Account) string {
 	return a.Name
 }
 
-// headOf 截取响应开头片段用于排障。
+// headOf truncates the beginning of the response for troubleshooting.
 func headOf(raw []byte, n int) string {
 	if len(raw) <= n {
 		return string(raw)

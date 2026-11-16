@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// /v1/theos 10 分钟内走缓存：它同时是签到通道，高频轮询会把上游按天限流的
-// 「重启签到」次数打爆（403 check_in_refused）。
+// /v1/theos uses the cache within 10 minutes: it is also the check-in channel, and high-frequency polling will trigger the upstream's daily rate limit
+// Restart check-in count exceeds the limit (403 check_in_refused).
 func TestTheosEndpointCachesForTenMinutes(t *testing.T) {
 	hits := 0
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +40,7 @@ func TestTheosEndpointCachesForTenMinutes(t *testing.T) {
 		t.Fatalf("应标记 cached: %s", rec.Body.String())
 	}
 
-	// force=1 绕过缓存。
+	// force=1 bypasses the cache.
 	rec = do(t, s, http.MethodGet, "/v1/theos?force=1", key, "")
 	if rec.Code != http.StatusOK || hits != 2 {
 		t.Fatalf("force=1 应真打上游，hits=%d code=%d", hits, rec.Code)

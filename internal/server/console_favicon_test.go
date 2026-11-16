@@ -11,11 +11,13 @@ import (
 	"testing"
 )
 
-// TestConsoleFaviconServed 守住「标签页图标」这条浏览器自动请求的固定路径。
+// TestConsoleFaviconServed guards the fixed path browsers request automatically for the
+// "tab icon".
 //
-// 以前没有 favicon：每次打开控制台 / 登录页，浏览器都会朝 /favicon.ico 打一发
-// 404（还会进访问日志）。图标复用 DeepAI Code 桌面端的应用图标（见 docs/assets），
-// 所以这里不只验 200，还验内容确实是 ICO / PNG——免得某次改动把空文件塞进去。
+// There used to be no favicon: every time the console / login page was opened, the
+// browser fired a 404 at /favicon.ico (which even went into the access log). The icon
+// reuses the DeepAI Code desktop app icon (see docs/assets), so this checks not only for
+// 200 but that the content really is ICO / PNG - so a change cannot slip in an empty file.
 func TestConsoleFaviconServed(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -24,7 +26,7 @@ func TestConsoleFaviconServed(t *testing.T) {
 		ctype string
 		magic []byte
 	}{
-		// ICO 头：reserved=0, type=1, count>0
+		// ICO header: reserved=0, type=1, count>0
 		{"/favicon.ico", "image/x-icon", []byte{0x00, 0x00, 0x01, 0x00}},
 		{"/apple-touch-icon.png", "image/png", []byte("\x89PNG\r\n\x1a\n")},
 	}
@@ -40,7 +42,8 @@ func TestConsoleFaviconServed(t *testing.T) {
 		if body := rec.Body.Bytes(); !bytes.HasPrefix(body, c.magic) {
 			t.Errorf("GET %s 不是合法的 %s（前 8 字节 %x）", c.path, c.ctype, body[:min(8, len(body))])
 		}
-		// 静态资源走 ETag 重校验：跟随二进制更新，但不能让浏览器每次全量重下。
+		// Static assets use ETag revalidation: they follow binary updates, but browsers should
+		// not re-download everything on every load.
 		if rec.Header().Get("ETag") == "" {
 			t.Errorf("GET %s 缺少 ETag", c.path)
 		}
@@ -51,7 +54,8 @@ func TestConsoleFaviconServed(t *testing.T) {
 			t.Errorf("GET %s 缺少 nosniff", c.path)
 		}
 
-		// 条件请求要能命中 304（图标随版本更新，但不必每次重下）。
+		// Conditional requests must hit 304 (the icon updates with releases, but need not be
+		// re-downloaded every time).
 		req := httptest.NewRequest(http.MethodGet, c.path, nil)
 		req.RemoteAddr = "127.0.0.1:34567"
 		req.Header.Set("If-None-Match", rec.Header().Get("ETag"))
@@ -63,10 +67,11 @@ func TestConsoleFaviconServed(t *testing.T) {
 	}
 }
 
-// TestConsolePagesReferenceFavicon 确认两个页面都声明了图标。
+// TestConsolePagesReferenceFavicon verifies that both pages declare the icon.
 //
-// 只把文件嵌进二进制不够：页面不写 <link rel="icon">，浏览器仍会去猜默认路径，
-// 移动端「添加到主屏」也拿不到图标。
+// Embedding the file in the binary is not enough: if the page does not include
+// <link rel="icon">, the browser still guesses the default path, and "add to home screen"
+// on mobile gets no icon either.
 func TestConsolePagesReferenceFavicon(t *testing.T) {
 	for _, name := range []string{"web/index.html", "web/login.html"} {
 		page := string(web.MustRead(name))
@@ -81,11 +86,12 @@ func TestConsolePagesReferenceFavicon(t *testing.T) {
 	}
 }
 
-// TestConsoleFaviconMatchesDocsAsset 守住「图标只有一份真源」。
+// TestConsoleFaviconMatchesDocsAsset guards the rule that the icon has a single source of truth.
 //
-// 控制台里的 favicon.ico 是 docs/assets/logo.ico 的副本（embed 只能读包内文件）。
-// 换 Logo 时忘了同步，就会出现「README 是新图、标签页还是旧图」——肉眼几乎
-// 发现不了，但确实是两套品牌资产。这里直接按字节比对。
+// favicon.ico in the console is a copy of docs/assets/logo.ico (embed can only read files
+// inside the package). Forgetting to sync when the logo changes produces "README shows the
+// new image, the tab still shows the old one" - nearly impossible to spot by eye, yet
+// genuinely two sets of brand assets. This compares bytes directly.
 func TestConsoleFaviconMatchesDocsAsset(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join("..", "..", "docs", "assets", "logo.ico"))
 	if err != nil {
@@ -98,11 +104,11 @@ func TestConsoleFaviconMatchesDocsAsset(t *testing.T) {
 	}
 }
 
-// TestStaticAssetsSkipAccessLog 确认图标不会被写进访问日志。
+// TestStaticAssetsSkipAccessLog verifies that icons are not written to the access log.
 //
-// 浏览器每次打开页面都会自动请求 /favicon.ico（以及 Apple 的 touch icon），
-// 它们和 /style.css、/js/* 一样是纯静态资源：进日志只会把 access 行刷成
-// 「一半是图标」的噪声，还会让 /metrics 的 2xx 计数虚高。
+// Browsers automatically request /favicon.ico (and Apple's touch icon) every time a page
+// is opened; like /style.css and /js/*, they are purely static assets. Logging them only
+// fills the access lines with "half icons" noise and also inflates the 2xx count in /metrics.
 func TestStaticAssetsSkipAccessLog(t *testing.T) {
 	for _, p := range []string{"/favicon.ico", "/apple-touch-icon.png", "/style.css", "/js/app.js", "/ping"} {
 		if !isStaticAsset(p) {

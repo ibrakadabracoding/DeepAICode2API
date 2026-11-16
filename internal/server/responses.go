@@ -11,12 +11,12 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// handleResponses 是 /v1/responses 的入口。
+// handleResponses is the entry point for /v1/responses.
 //
-// 两条路径：
-//   - 目录里 api=openai-responses 的模型：原样透传到上游 /responses；
-//   - 其余模型：把 Responses 请求翻译成 Chat Completions，再把结果
-//     合成为 Responses 对象 / 事件流。
+// Two paths:
+// - Models with api=openai-responses in the catalog: pass through to the upstream /responses as-is;
+// - All other models: translate the Responses request into Chat Completions, then
+// synthesize the result into a Responses object / event stream.
 func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -60,12 +60,12 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 	s.blockingResponsesAsChat(w, r, chatPayload, affinity, rls)
 }
 
-// passthroughResponses 透传上游 /responses。
+// passthroughResponses passes through to the upstream /responses.
 func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, payload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
 
-	// 同上：上游缺省 stream 时按 SSE 返回，必须显式下发。
+	// Same as above: when the upstream omits stream, it returns SSE, so it must be sent explicitly.
 	payload["stream"] = rl.stream
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -91,9 +91,9 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 		}
 		var out map[string]any
 		if err := json.Unmarshal(rawResp, &out); err != nil {
-			// 上游回的不是 JSON（HTML 登录页 / SSE 帧 / 纯文本限流提示）。
-			// 保持原样透传 + 200（客户端拿到的与上游一致），但**必须留日志**：
-			// 旧实现在这里直接 return，请求会从控制台日志与统计里彻底消失。
+			// The upstream returned something that is not JSON (HTML login page / SSE frames / plain-text rate-limit notice).
+			// Pass through as-is + 200 (the client receives exactly what the upstream returned), but **logging is mandatory**:
+			// The old implementation returned directly here, so the request vanished entirely from console logs and statistics.
 			httpx.WriteRawJSON(w, http.StatusOK, rawResp)
 			rl.doneStatus(http.StatusOK, 0, Usage{},
 				fmt.Errorf("上游响应不是合法 JSON（已原样透传）: %w", err))
@@ -138,7 +138,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 			}
 		}
 		outLen += responsesEventTextLen(obj)
-		// 必须写出改写后的对象：直接写原始 data 会把 model 改写丢掉。
+		// The rewritten object must be written out: writing the raw data directly would lose the model rewrite.
 		if raw := jsonEvent(obj); raw != nil {
 			sw.data(raw)
 			return true
@@ -158,7 +158,7 @@ func (s *Server) passthroughResponses(w http.ResponseWriter, r *http.Request, pa
 	rl.done(outLen, usage, streamErr)
 }
 
-// blockingResponsesAsChat 用 Chat Completions 合成 Responses 响应。
+// blockingResponsesAsChat synthesizes a Responses response using Chat Completions.
 func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
@@ -178,7 +178,7 @@ func (s *Server) blockingResponsesAsChat(w http.ResponseWriter, r *http.Request,
 	httpx.WriteJSON(w, http.StatusOK, respObj)
 }
 
-// streamResponsesAsChat 用 Chat Completions 流合成 Responses 事件流。
+// streamResponsesAsChat synthesizes a Responses event stream using a Chat Completions stream.
 func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, chatPayload map[string]any, affinity string, rl reqLog) {
 	ctx, cancel := httpx.ContextWithTimeout(r, s.requestTimeout())
 	defer cancel()
@@ -235,9 +235,9 @@ func (s *Server) streamResponsesAsChat(w http.ResponseWriter, r *http.Request, c
 	rl.done(outLen, usage, streamErr)
 }
 
-// --- 工具函数 ---
+// --- Helper functions ---
 
-// rewriteResponsesModel 把 Responses 对象 / 事件里的 model 改为对外模型名。
+// rewriteResponsesModel changes the model in a Responses object / event to the external model name.
 func rewriteResponsesModel(obj map[string]any, publicModel string) {
 	if publicModel == "" {
 		return
@@ -250,7 +250,7 @@ func rewriteResponsesModel(obj map[string]any, publicModel string) {
 	}
 }
 
-// responsesTextLen 统计 Responses 对象中的输出文本长度。
+// responsesTextLen counts the length of the output text in a Responses object.
 func responsesTextLen(obj map[string]any) int {
 	total := 0
 	if s, ok := obj["output_text"].(string); ok {
@@ -284,7 +284,7 @@ func responsesTextLen(obj map[string]any) int {
 	return total
 }
 
-// responsesEventTextLen 统计单个流事件的文本增量长度。
+// responsesEventTextLen counts the length of the text delta in a single stream event.
 func responsesEventTextLen(obj map[string]any) int {
 	if strOf(obj["type"]) == "response.output_text.delta" {
 		return len([]rune(strOf(obj["delta"])))

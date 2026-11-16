@@ -10,7 +10,7 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// chatUpstreamOK 返回一个总是成功的最小 chat 响应。
+// chatUpstreamOK returns a minimal chat response that always succeeds.
 func chatUpstreamOK(t *testing.T) *upstream {
 	t.Helper()
 	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -22,8 +22,8 @@ func chatUpstreamOK(t *testing.T) *upstream {
 
 const chatBody = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
 
-// TestRateLimitDisabledByDefault 守住「升级不改变既有行为」：
-// 未配置限流时，连续请求必须全部成功。
+// TestRateLimitDisabledByDefault guards "upgrading does not change existing behavior":
+// When rate limiting is not configured, consecutive requests must all succeed.
 func TestRateLimitDisabledByDefault(t *testing.T) {
 	s, key := newTestServer(t, chatUpstreamOK(t))
 	for i := 0; i < 10; i++ {
@@ -34,7 +34,7 @@ func TestRateLimitDisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestRateLimitPerKey 验证令牌桶按密钥生效，且 429 带 Retry-After。
+// TestRateLimitPerKey verifies the token bucket applies per key, and 429 includes Retry-After.
 func TestRateLimitPerKey(t *testing.T) {
 	s, key := newTestServer(t, chatUpstreamOK(t))
 	s.Store.UpdateSettings(func(st *store.Settings) {
@@ -57,14 +57,14 @@ func TestRateLimitPerKey(t *testing.T) {
 		t.Fatalf("429 响应体应为 rate_limit_error：%s", body)
 	}
 
-	// 另一把密钥不受影响：限流是 per-key 而不是全局。
+	// Another key is unaffected: rate limiting is per-key, not global.
 	other := s.Store.AddKey("other", "").Key
 	if rec := do(t, s, http.MethodPost, "/v1/chat/completions", other, chatBody); rec.Code != http.StatusOK {
 		t.Fatalf("另一把密钥应不受影响，实际 %d：%s", rec.Code, rec.Body.String())
 	}
 }
 
-// TestKeyConcurrencyLimit 验证单密钥并发闸门与名额归还。
+// TestKeyConcurrencyLimit verifies the per-key concurrency gate and slot release.
 func TestKeyConcurrencyLimit(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.KeyConcurrency = 1 })
@@ -76,7 +76,7 @@ func TestKeyConcurrencyLimit(t *testing.T) {
 	if _, ok, _ := s.rateLimitGate("fingerprint-a"); ok {
 		t.Fatal("同一密钥的第二个并发请求应被拒绝")
 	}
-	// 不同密钥互不影响。
+	// Different keys do not affect each other.
 	releaseB, okB, _ := s.rateLimitGate("fingerprint-b")
 	if !okB {
 		t.Fatal("不同密钥不应共享并发名额")
@@ -88,7 +88,7 @@ func TestKeyConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// TestTokenBucketRefill 验证令牌按时间补充（而不是永久封死）。
+// TestTokenBucketRefill verifies tokens refill over time (rather than being permanently blocked).
 func TestTokenBucketRefill(t *testing.T) {
 	l := newKeyRateLimiter()
 	if ok, _ := l.allow("k", 20, 1); !ok {
@@ -97,14 +97,14 @@ func TestTokenBucketRefill(t *testing.T) {
 	if ok, _ := l.allow("k", 20, 1); ok {
 		t.Fatal("令牌用尽后应立即拒绝")
 	}
-	// 20 rps 下约 50ms 补一个令牌；留足余量。
+	// At 20 rps, one token is refilled about every 50ms; leave enough margin.
 	time.Sleep(120 * time.Millisecond)
 	if ok, _ := l.allow("k", 20, 1); !ok {
 		t.Fatal("等待后应按速率补充令牌")
 	}
 }
 
-// TestRateLimitSettingsRoundTrip 验证控制台能保存并读回限流参数（含显式 0）。
+// TestRateLimitSettingsRoundTrip verifies the console can save and read back rate limit parameters (including explicit 0).
 func TestRateLimitSettingsRoundTrip(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 
@@ -117,7 +117,7 @@ func TestRateLimitSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("设置未生效：%+v", st)
 	}
 
-	// 显式 0 表示关闭限流，不能被 “<= 0 忽略” 的旧逻辑吃掉。
+	// An explicit 0 means rate limiting is disabled and must not be swallowed by the old "<= 0 means ignore" logic.
 	do(t, s, http.MethodPost, "/admin/api/settings", "", `{"rate_limit_rps":0,"key_concurrency":0}`)
 	st = s.Store.Settings()
 	if st.RateLimitRPS != 0 || st.KeyConcurrency != 0 {
@@ -125,14 +125,14 @@ func TestRateLimitSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestTokenBucketSweepsIdleEntries 覆盖桶表回收：密钥轮换后旧桶不能永久驻留。
+// TestTokenBucketSweepsIdleEntries covers bucket table sweeping: old buckets must not remain forever after key rotation.
 //
-// 桶按密钥指纹索引，密钥删除 / 轮换不会主动通知限流器。没有回收时，一个长期
-// 运行的网关会随着密钥历史线性涨内存（每条几百字节，规模不大但只增不减）。
+// Buckets are indexed by key fingerprint; key deletion / rotation does not proactively notify the rate limiter. Without sweeping, a long-running
+// running gateway's memory grows linearly with key history (a few hundred bytes each; small in scale but only increasing).
 func TestTokenBucketSweepsIdleEntries(t *testing.T) {
 	l := newKeyRateLimiter()
 
-	// 造满一桌闲置桶：直接把 last 拨到 TTL 之外，避免测试里等 30 分钟。
+	// Fill a table with idle buckets: directly move last beyond the TTL to avoid waiting 30 minutes in the test.
 	for i := 0; i < keyRateLimiterMaxBuckets; i++ {
 		id := "old-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
 		l.allow(id, 1, 1)
@@ -143,7 +143,7 @@ func TestTokenBucketSweepsIdleEntries(t *testing.T) {
 	}
 	l.mu.Unlock()
 
-	// 再建一个新桶会触发回收。
+	// Creating another new bucket triggers sweeping.
 	if ok, _ := l.allow("fresh", 1, 1); !ok {
 		t.Fatal("新密钥应能正常限流")
 	}
@@ -159,7 +159,7 @@ func TestTokenBucketSweepsIdleEntries(t *testing.T) {
 		t.Fatal("新桶不应被回收")
 	}
 
-	// 有在途请求的桶不回收：它的 tokens/last 仍在参与并发判定。
+	// Buckets with in-flight requests are not swept: their tokens/last are still involved in concurrency decisions.
 	l.mu.Lock()
 	l.buckets["busy"] = &tokenBucket{tokens: 1, last: time.Now().Add(-2 * keyRateLimiterIdleTTL)}
 	l.mu.Unlock()

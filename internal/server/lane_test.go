@@ -11,7 +11,8 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// 426 → 借账号凭据打 /models 探到新车道 → 换道重试成功，并把结果落盘。
+// 426 → borrow account credentials to probe /models for the new lane → switch lanes, retry successfully,
+// and persist the result.
 func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	var mu sync.Mutex
 	var chatLanes []string
@@ -53,7 +54,7 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 		t.Fatalf("LaneBuild 应记录本次构建，实际 %q", got)
 	}
 
-	// 第二次请求直接用新车道，不再触发探测。
+	// The second request uses the new lane directly and does not trigger another probe.
 	mu.Lock()
 	before := len(chatLanes)
 	mu.Unlock()
@@ -69,8 +70,8 @@ func TestLaneUnsupportedRefreshesAndRetries(t *testing.T) {
 	}
 }
 
-// 状态文件里还留着上一版探测到的旧车道时，升级后应直接用编译期的新车道，
-// 而不是等一次 426 才换道。
+// When the state file still holds an old lane probed by a previous version, the upgrade should use
+// the new compile-time lane directly instead of waiting for a 426 to switch.
 func TestNewPrefersNewerCompiledLane(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "state.json"))
@@ -91,8 +92,9 @@ func TestNewPrefersNewerCompiledLane(t *testing.T) {
 	}
 }
 
-// 探测值由当前构建验证过时，即使比编译期默认值旧也要信任：
-// 上游可能只剩旧车道可用，继续发编译值只会一直 426。
+// When the probed value was verified by the current build, trust it even if it is older than the
+// compile-time default: the upstream may only have the old lane available, and continuing to send
+// the compiled value would keep returning 426.
 func TestNewTrustsLowerLaneVerifiedByThisBuild(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "state.json"))
@@ -116,7 +118,7 @@ func TestNewTrustsLowerLaneVerifiedByThisBuild(t *testing.T) {
 	}
 }
 
-// 探测值来自旧构建（LaneBuild 不匹配）时不能压过升级后的编译值。
+// A probed value from an older build (LaneBuild mismatch) must not override the compiled value after upgrade.
 func TestNewPrefersCompiledOverProbeFromOlderBuild(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "state.json"))
@@ -125,7 +127,7 @@ func TestNewPrefersCompiledOverProbeFromOlderBuild(t *testing.T) {
 	}
 	st.UpdateSettings(func(s *store.Settings) {
 		s.Lane = "5"
-		s.LaneBuild = "5" // 写这条状态时的编译期车道
+		s.LaneBuild = "5" // compile-time lane when this state was written
 	})
 	if err := st.Save(); err != nil {
 		t.Fatalf("保存状态: %v", err)
@@ -136,7 +138,8 @@ func TestNewPrefersCompiledOverProbeFromOlderBuild(t *testing.T) {
 	}
 }
 
-// 探测到的车道比编译期默认值新时，仍以探测结果为准（上游先抬车道的情形）。
+// When the probed lane is newer than the compile-time default, the probe result still wins (the case
+// where the upstream raises the lane first).
 func TestNewKeepsNewerProbedLane(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "state.json"))
@@ -153,7 +156,7 @@ func TestNewKeepsNewerProbedLane(t *testing.T) {
 	}
 }
 
-// 手填的非数字车道不能把网关卡死：退回编译期默认值。
+// A hand-entered non-numeric lane must not wedge the gateway: fall back to the compile-time default.
 func TestNewerLaneFallsBackOnGarbage(t *testing.T) {
 	if got := newerLane("  "); got != deepai.LaneVersion {
 		t.Fatalf("空值 = %q，期望 %q", got, deepai.LaneVersion)

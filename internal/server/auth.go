@@ -9,17 +9,18 @@ import (
 	"strings"
 )
 
-// --- 数据面 / 管理面鉴权 ---
+// --- Data plane / admin plane authentication ---
 
-// withAuth 校验 Bearer 密钥。
+// withAuth validates the Bearer key.
 //
-// 尚未签发任何密钥时：
-//   - 来自本机回环的请求放行（首次使用的便利，且便于控制台自举）；
-//   - 来自非回环来源的请求一律 503 setup_required。
-//     否则在监听 0.0.0.0（容器 / 局域网）时，从首次启动到创建第一个密钥之间
-//     网关就是一个无需鉴权的开放中继。
+// When no key has been issued yet:
+//   - requests from the local loopback are allowed (convenient for first use and for
+//     bootstrapping the console);
+//   - requests from non-loopback sources always get 503 setup_required.
+//     Otherwise, while listening on 0.0.0.0 (container / LAN), the gateway would be an
+//     open relay with no authentication between first startup and creation of the first key.
 //
-// 一旦签发了密钥，所有来源都强制校验。
+// Once a key has been issued, every source is subject to authentication.
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.Store.HasKeys() {
@@ -40,7 +41,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			httpx.WriteErr(w, http.StatusUnauthorized, "API 密钥无效或已停用", "invalid_request_error")
 			return
 		}
-		// 按密钥隔离的限流：令牌桶（RPS）+ 在途并发。默认 0 = 不限。
+		// Per-key rate limiting: token bucket (RPS) + in-flight concurrency. Default 0 = unlimited.
 		release, ok, retryAfter := s.rateLimitGate(keyIDOf(key))
 		if !ok {
 			writeRateLimited(w, retryAfter)
@@ -51,17 +52,20 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// withAdminAuth 保护控制台接口。
+// withAdminAuth protects the console endpoints.
 //
-// 鉴权策略：
-//   - 已设置管理密码：必须通过 X-Admin-Password 或 Authorization: Bearer 提供；
-//   - 未设置管理密码：仅允许来自本机环回的请求（避免局域网内裸奔）。
+// Authentication policy:
+//   - Admin password set: it must be supplied via X-Admin-Password or Authorization: Bearer;
+//   - Admin password not set: only requests from the local loopback are allowed (avoids
+//     exposing the interface on the LAN).
 //
-// 另外对写操作（非 GET/HEAD/OPTIONS）做同源校验，阻断跨站请求伪造。
+// It also performs a same-origin check on write operations (non-GET/HEAD/OPTIONS) to
+// block cross-site request forgery.
 func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if pw := s.Store.Settings().AdminPassword; pw != "" {
-			// 先看退避：处于退避期的来源直接 429，不再给口令对错的提示。
+			// Check backoff first: a source in its backoff window gets 429 immediately, with no
+			// hint about whether the password was right or wrong.
 			if !s.checkAdminThrottle(w, r) {
 				return
 			}
@@ -139,10 +143,11 @@ func (s *Server) resolveKeyRef(ref string) string {
 	return ref
 }
 
-// keyExists 报告一把完整 Key 是否还在号池里。
+// keyExists reports whether a full Key still exists in the account pool.
 //
-// resolveKeyRef 找不到时会把入参原样返回，所以「解析结果非空」并不代表存在；
-// 删除 / 启停前要用本函数确认，否则删一个已被吊销的 Key 也会回成功。
+// resolveKeyRef returns its input unchanged when it finds no match, so a non-empty
+// resolution result does not mean the key exists. Confirm with this function before
+// delete / enable / disable; otherwise deleting an already-revoked Key would report success.
 func (s *Server) keyExists(key string) bool {
 	if key == "" {
 		return false
@@ -168,10 +173,11 @@ func extractKey(r *http.Request) string {
 	return ""
 }
 
-// handleAdminAuth 校验管理口令本身（登录页用）。
+// handleAdminAuth validates the admin password itself (used by the login page).
 //
-// 走 withAdminAuth 注册，所以「口令缺失或错误」已经在那里被拦成 401；
-// 能进到这里就说明口令是对的。刻意不返回口令、不返回设置项，只说 ok。
+// It is registered through withAdminAuth, so "missing or wrong password" has already
+// been rejected there with 401; reaching this point means the password is correct. It
+// deliberately returns neither the password nor any settings, just ok.
 func (s *Server) handleAdminAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")

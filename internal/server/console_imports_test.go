@@ -8,41 +8,46 @@ import (
 	"testing"
 )
 
-// 控制台拆成 ES module 之后，「忘了 import」是掉一行代码、零语法错误、
-// 零加载报错的故障：未绑定的标识符只在真正执行那一刻抛 ReferenceError，
-// 而且通常被同一个 .catch 接住，伪装成「接口失败」。
+// After the console was split into ES modules, "forgot to import" became a failure mode
+// with a missing line, zero syntax errors, and zero load errors: an unbound identifier
+// only throws ReferenceError at the moment it actually executes, and is usually swallowed
+// by the same .catch, disguising itself as an "API failure".
 //
-// 2026-11-11 的真实回归：app.js 的 import 块只有 renderAccounts /
-// renderKeys / renderSettings，漏了 ./render/logs.js；refreshLogs 里那句
-// renderLogs(state.logs) 于是抛 `renderLogs is not defined`，toast 显示
-// 「日志加载失败：renderLogs is not defined」——而 /admin/api/logs 是 200。
-// 这类断裂 go test 原本完全看不见（文件在、路由在、字符串都在），所以这里
-// 用静态契约把「跨模块标识符必须 import」钉住。
+// Real regression on 2026-11-11: app.js's import block had only renderAccounts /
+// renderKeys / renderSettings, missing ./render/logs.js; the line
+// renderLogs(state.logs) in refreshLogs then threw `renderLogs is not defined`, and the
+// toast showed "log loading failed: renderLogs is not defined" - while /admin/api/logs
+// returned 200. go test originally could not see this kind of breakage at all (file
+// present, route present, strings present), so this pins down "cross-module identifiers
+// must be imported" with a static contract.
 
-// consoleImportRe 匹配 `import { a, b as c } from './x.js'`（含多行写法）。
+// consoleImportRe matches `import { a, b as c } from './x.js'` (including multi-line forms).
 var consoleImportRe = regexp.MustCompile(`(?s)import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]`)
 
-// consoleExportRe 匹配 `export function f` / `export const f` / `export var f` / `export let f`。
+// consoleExportRe matches `export function f` / `export const f` / `export var f` / `export let f`.
 var consoleExportRe = regexp.MustCompile(`(?m)^\s*export\s+(?:async\s+)?(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)`)
 
-// consoleLocalDeclRe 匹配本文件自己的顶层声明与函数内声明（含 `function f`, `var f =`）。
+// consoleLocalDeclRe matches this file's own top-level and in-function declarations
+// (including `function f`, `var f =`).
 var consoleLocalDeclRe = regexp.MustCompile(`(?m)(?:^|[^\w$.])(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)`)
 
-// consoleNamedImport 是一条具名导入（orig 是目标模块的导出名，local 是本文件的名字）。
+// consoleNamedImport is a named import (orig is the export name in the target module,
+// local is the name used in this file).
 type consoleNamedImport struct {
 	orig, local, from string
 }
 
-// consoleModule 是一个脚本的静态视图：去掉注释后的源码 + 导入表。
+// consoleModule is a static view of a script: source with comments stripped + import table.
 type consoleModule struct {
 	name    string
 	src     string
 	imports map[string]consoleNamedImport // local -> import
-	locals  map[string]bool               // 本文件声明过的名字
-	exports map[string]bool               // 本文件导出的名字
+	locals  map[string]bool               // names declared in this file
+	exports map[string]bool               // names exported by this file
 }
 
-// loadConsoleModules 读出全部内嵌脚本（注释已剥离，行号与原文对齐）。
+// loadConsoleModules reads all embedded scripts (comments stripped, line numbers aligned
+// with the original).
 func loadConsoleModules(t *testing.T) map[string]*consoleModule {
 	t.Helper()
 	mods := make(map[string]*consoleModule, 16)
@@ -79,7 +84,8 @@ func loadConsoleModules(t *testing.T) map[string]*consoleModule {
 		for _, d := range consoleLocalDeclRe.FindAllStringSubmatch(src, -1) {
 			m.locals[d[1]] = true
 		}
-		// 形参与 catch 绑定也算本文件可用（渲染函数会收到注入的回调）。
+		// Parameters and catch bindings also count as available in this file (render functions
+		// receive injected callbacks).
 		for _, fn := range regexp.MustCompile(`(?s)function\s*[A-Za-z_$\w]*\s*\(([^)]*)\)`).FindAllStringSubmatch(src, -1) {
 			for _, p := range strings.Split(fn[1], ",") {
 				p = strings.TrimSpace(strings.SplitN(p, "=", 2)[0])
@@ -100,15 +106,17 @@ func loadConsoleModules(t *testing.T) map[string]*consoleModule {
 	return mods
 }
 
-// TestConsoleModulesImportWhatTheyCall 是「拆模块漏 import」的静态防线：
+// TestConsoleModulesImportWhatTheyCall is a static defense against "forgot an import when
+// splitting modules":
 //
-//	只要某文件调用了别的模块导出的函数（`renderLogs(...)`），就必须在本文件
-//	import 到它；否则只在运行到那一行时抛 ReferenceError，而错误提示还常被
-//	同一个 .catch 改写成「接口失败」。
+//	Any file that calls a function exported by another module (`renderLogs(...)`) must
+//	import it in this file; otherwise a ReferenceError is thrown only when that line
+//	runs, and the error message is often rewritten into an "API failure" by the same .catch.
 func TestConsoleModulesImportWhatTheyCall(t *testing.T) {
 	mods := loadConsoleModules(t)
 
-	// 导出名 -> 提供它的模块（重名说明拆分本身有问题，单独报出来）。
+	// Export name -> module providing it (duplicates mean the split itself is broken;
+	// report them separately).
 	owner := map[string]string{}
 	for name, m := range mods {
 		for ex := range m.exports {
@@ -127,9 +135,9 @@ func TestConsoleModulesImportWhatTheyCall(t *testing.T) {
 		m := mods[name]
 		for symbol := range owner {
 			if owner[symbol] == name {
-				continue // 自己导出的，未绑定调用也不会 ReferenceError
+				continue // exported by this file; an unbound call will not throw ReferenceError either
 			}
-			// 裸调用 / new：`renderLogs(`、`new Foo(`；点号后的同名方法不算。
+			// Bare call / new: `renderLogs(`, `new Foo(`; a same-named method after a dot does not count.
 			call := regexp.MustCompile(`(?:^|[^\w$.])` + regexp.QuoteMeta(symbol) + `\s*\(`)
 			idx := call.FindStringIndex(m.src)
 			if idx == nil {
@@ -151,9 +159,10 @@ func TestConsoleModulesImportWhatTheyCall(t *testing.T) {
 	}
 }
 
-// TestConsoleImportsResolve 校验 import 的落点：路径必须存在，导出名必须真的
-// 在目标模块里。拆分时最常见的两种手误——路径写成 ./render/log.js（少个 s）、
-// 名字拼错——在这里直接失败，而不是浏览器里 404 / undefined。
+// TestConsoleImportsResolve validates where imports land: the path must exist, and the
+// exported name must really be in the target module. The two most common slips when
+// splitting - writing the path as./render/log.js (missing "s") or misspelling a name -
+// fail here directly instead of becoming a 404 / undefined in the browser.
 func TestConsoleImportsResolve(t *testing.T) {
 	mods := loadConsoleModules(t)
 

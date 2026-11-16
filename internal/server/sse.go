@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// sseWriter 统一 SSE 响应头与 flush。
+// sseWriter unifies SSE response headers and flush.
 type sseWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
@@ -19,8 +19,8 @@ func newSSEWriter(w http.ResponseWriter) *sseWriter {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
-	// 在这里提交 200：调用方随后再写 header 会被 net/http 判为
-	// superfluous（旧实现正是如此，只在日志里制造噪音）。
+	// Commit 200 here: if the caller writes headers afterwards, net/http will flag it as
+	// superfluous (the old implementation did exactly this, only creating noise in the logs).
 	w.WriteHeader(http.StatusOK)
 	if flusher != nil {
 		flusher.Flush()
@@ -49,7 +49,7 @@ func (s *sseWriter) flush() {
 	}
 }
 
-// jsonEvent 序列化事件载荷，失败时返回 nil。
+// jsonEvent serializes the event payload and returns nil on failure.
 func jsonEvent(v any) []byte {
 	raw, err := json.Marshal(v)
 	if err != nil {

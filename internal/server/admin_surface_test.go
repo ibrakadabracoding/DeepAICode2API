@@ -10,7 +10,7 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// keyView 对应 safeKeyList 下发的单条密钥视图。
+// keyView is a single key view emitted by safeKeyList.
 type keyView struct {
 	Key      string `json:"key"`
 	Name     string `json:"name"`
@@ -32,12 +32,12 @@ func keysOf(t *testing.T, rec interface{ Body() []byte }) []keyView {
 	return out.Keys
 }
 
-// body 让 httptest.ResponseRecorder / 内存缓冲统一取字节。
+// body lets httptest.ResponseRecorder and in-memory buffers expose bytes uniformly.
 type bodyRecorder struct{ b []byte }
 
 func (r bodyRecorder) Body() []byte { return r.b }
 
-// TestAdminKeysNeverLeakPlaintext 是安全断言：列表接口只能下发脱敏值。
+// TestAdminKeysNeverLeakPlaintext is a security assertion: the list endpoint may only emit masked values.
 func TestAdminKeysNeverLeakPlaintext(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -61,7 +61,7 @@ func TestAdminKeysNeverLeakPlaintext(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"keys"`) {
 		t.Fatal("响应缺少 keys 字段")
 	}
-	// 完整密钥一次都不该出现在响应体里。
+	// The full key must never appear in the response body, not even once.
 	if strings.Contains(rec.Body.String(), key) {
 		t.Fatal("响应体包含完整密钥")
 	}
@@ -70,7 +70,7 @@ func TestAdminKeysNeverLeakPlaintext(t *testing.T) {
 func TestAdminKeysCreateAndGroupAndDelete(t *testing.T) {
 	s, first := newTestServer(t, nil)
 
-	// 新建：name/group 落库，密钥值形如 sk-xxx 且与既有密钥不同。
+	// Create: name/group are persisted, and the key looks like sk-xxx and differs from existing keys.
 	rec := do(t, s, http.MethodPost, "/admin/api/keys", "", `{"name":"第二把","group":"g2"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST = %d，期望 200：%s", rec.Code, rec.Body.String())
@@ -106,7 +106,7 @@ func TestAdminKeysCreateAndGroupAndDelete(t *testing.T) {
 		t.Fatal("新建的密钥没出现在列表里")
 	}
 
-	// set-group：用脱敏值当引用（控制台实际传的就是这个）。
+	// set-group: use the masked value as the reference (this is what the console actually sends).
 	rec = do(t, s, http.MethodPost, "/admin/api/keys", "",
 		`{"action":"set-group","key":"`+mask(created.Key)+`","group":"g3"}`)
 	if rec.Code != http.StatusOK {
@@ -124,12 +124,12 @@ func TestAdminKeysCreateAndGroupAndDelete(t *testing.T) {
 		t.Fatalf("存储里的分组 = %q，期望 g3", got)
 	}
 
-	// set-group 缺少 key → 400。
+	// set-group without key → 400.
 	if rec := do(t, s, http.MethodPost, "/admin/api/keys", "", `{"action":"set-group","group":"g4"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("缺 key 时应 400，得到 %d", rec.Code)
 	}
 
-	// toggle：启用状态翻转。
+	// toggle: flip the enabled state.
 	rec = do(t, s, http.MethodDelete, "/admin/api/keys?toggle="+mask(created.Key), "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("toggle = %d", rec.Code)
@@ -140,7 +140,7 @@ func TestAdminKeysCreateAndGroupAndDelete(t *testing.T) {
 		}
 	}
 
-	// 删除。
+	// Delete.
 	if rec := do(t, s, http.MethodDelete, "/admin/api/keys?key="+mask(created.Key), "", ""); rec.Code != http.StatusOK {
 		t.Fatalf("delete = %d", rec.Code)
 	}
@@ -148,7 +148,7 @@ func TestAdminKeysCreateAndGroupAndDelete(t *testing.T) {
 		t.Fatalf("删除后密钥数 = %d，期望 1", got)
 	}
 
-	// 不支持的方法。
+	// Unsupported method.
 	if rec := do(t, s, http.MethodPut, "/admin/api/keys", "", ""); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("PUT = %d，期望 405", rec.Code)
 	}
@@ -181,7 +181,7 @@ func TestAdminStatsReadAndReset(t *testing.T) {
 		t.Fatal("started_at 不应为 0")
 	}
 
-	// 制造一次真实记录，确认计数被写进统计。
+	// Produce a real record and confirm the counters are written into stats.
 	s.Store.Record(store.LogEntry{Status: http.StatusOK, TokensIn: 10, TokensOut: 5, Cost: 0.5}, 100)
 	if got := s.Store.Stats(); got.TotalRequests != 1 || got.TotalTokensIn != 10 || got.TotalCost != 0.5 {
 		t.Fatalf("统计未计入：%+v", got)
@@ -230,7 +230,7 @@ func TestAdminModelsGetAndRefresh(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("模型列表不是合法 JSON: %v", err)
 	}
-	// 尚未刷新过：必须回落到内置兜底模型，与 /v1/models 保持一致。
+	// Never refreshed: must fall back to the built-in fallback model, consistent with /v1/models.
 	if len(got.Models) != 1 || got.Models[0]["id"] != deepai.DefaultModel {
 		t.Fatalf("未刷新时应给出兜底模型，得到: %+v", got.Models)
 	}
@@ -238,7 +238,7 @@ func TestAdminModelsGetAndRefresh(t *testing.T) {
 		t.Fatalf("default_model = %q，期望 %q", got.Default, deepai.DefaultModel)
 	}
 
-	// POST 触发拉取：必须以假上游的目录为准。
+	// POST triggers a fetch: the fake upstream's catalog must be authoritative.
 	rec = do(t, s, http.MethodPost, "/admin/api/models", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST = %d：%s", rec.Code, rec.Body.String())
@@ -264,7 +264,7 @@ func TestAdminModelsGetAndRefresh(t *testing.T) {
 		t.Fatalf("默认模型 = %q", s.Store.DefaultModel())
 	}
 
-	// 上游失败 → 502 upstream_error。
+	// Upstream failure → 502 upstream_error.
 	failing := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
@@ -287,11 +287,12 @@ func TestAdminModelsGetAndRefresh(t *testing.T) {
 	}
 }
 
-// TestAdminKeysDeleteReportsMissing 守住删除 / 启停的目标必须真的存在。
+// TestAdminKeysDeleteReportsMissing guards that delete/toggle targets really exist.
 //
-// 以前 DELETE /admin/api/keys 把 Store 返回的 bool 丢掉：删一个已被吊销（或打错）
-// 的 Key 会回 200 {"ok":true} 还落一次盘。控制台看到「操作成功」，列表却没变——
-// 典型场景是两个标签页，其中一边已经删过。
+// Previously DELETE /admin/api/keys discarded the bool returned by Store: deleting a key
+// that had already been revoked (or mistyped) returned 200 {"ok":true} and persisted to
+// disk once. The console showed "operation succeeded" while the list stayed unchanged-
+// a typical case being two browser tabs where one has already deleted the key.
 func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	keys := s.Store.Keys()
@@ -300,7 +301,7 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 	}
 	live := keys[0].Key
 
-	// 两个参数都不带：说明调用方写错了，直接 400（别把「什么都没做」当成功）。
+	// Neither parameter given: the caller is wrong, so return 400 directly (don't treat "did nothing" as success).
 	if rec := do(t, s, http.MethodDelete, "/admin/api/keys", "", ""); rec.Code != http.StatusBadRequest {
 		t.Fatalf("缺参数时 = %d，期望 400：%s", rec.Code, rec.Body.String())
 	}
@@ -315,7 +316,7 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 			t.Fatalf("%s 仍回了成功体：%s", q, body)
 		}
 	}
-	// 失败的删除不该落盘：否则每次「删不存在的 Key」都会触发一次全量写盘。
+	// Failed deletes must not persist: otherwise every "delete a nonexistent key" triggers a full disk write.
 	if saves, savedBytes := s.Store.SaveCounters(); saves != before || savedBytes != beforeBytes {
 		t.Fatalf("404 路径不应落盘：saves %d→%d，bytes %d→%d", before, saves, beforeBytes, savedBytes)
 	}
@@ -323,7 +324,7 @@ func TestAdminKeysDeleteReportsMissing(t *testing.T) {
 		t.Fatalf("失败的删除改动了号池：%d → %d", len(keys), got)
 	}
 
-	// 真实目标的成功路径不变，并明确回报做了什么（脱敏引用同样可用）。
+	// The success path for a real target is unchanged and reports exactly what happened (masked references work too).
 	rec := do(t, s, http.MethodDelete, "/admin/api/keys?toggle="+mask(live), "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("toggle = %d：%s", rec.Code, rec.Body.String())

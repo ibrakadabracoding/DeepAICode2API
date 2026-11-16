@@ -6,18 +6,18 @@ import (
 	"testing"
 )
 
-// TestDecodeJSONRequestEnvelopes 覆盖三个推理入口共享的「读体 → 解析 → 报错」。
+// TestDecodeJSONRequestEnvelopes covers the shared "read body → parse → report error" flow of the three inference entry points.
 //
-// 这段逻辑此前在 chat / responses / anthropic 里各写一遍，状态码与文案改一处
-// 漏两处；抽成 decodeJSONRequest 后由 fail 回调保留各协议的错误信封形制，
-// 这里锁住「协议对了、状态码对了、不把畸形请求放进业务层」。
+// This logic was previously written separately in chat / responses / anthropic, so changing the status code and message in one place
+// missed two places; after extracting it into decodeJSONRequest, the fail callback preserves each protocol's error envelope shape,
+// This locks in "correct protocol, correct status code, and malformed requests are not passed into the business layer".
 func TestDecodeJSONRequestEnvelopes(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
 	cases := []struct {
 		name      string
 		path      string
-		wantType  string // 错误信封里的 type（Anthropic 在 error.type，OpenAI 在顶层 error.type）
+		wantType  string // The type in the error envelope (Anthropic under error.type, OpenAI at top-level error.type)
 		anthropic bool
 	}{
 		{"chat 请求体损坏", "/v1/chat/completions", "invalid_request_error", false},
@@ -39,7 +39,7 @@ func TestDecodeJSONRequestEnvelopes(t *testing.T) {
 			if c.anthropic && !strings.Contains(body, `"type":"error"`) {
 				t.Fatalf("Anthropic 错误信封应为 type=error：%s", body)
 			}
-			// 上游不应被调用：畸形请求在入口就该被挡住。
+			// The upstream should not be called: malformed requests should be blocked at the entry point.
 		})
 	}
 }

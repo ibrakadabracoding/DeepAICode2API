@@ -7,26 +7,26 @@ import (
 	"deepaicode2api/internal/logx"
 )
 
-// --- 状态落盘 ---
+// --- Persist state to disk ---
 //
-// 管理动作改完内存就直接回 {"ok":true} 是不够的：磁盘满、文件被占用（Windows
-// 上常见）、目录只读时，改动会在重启后消失，而调用方拿到的仍是成功。
-// 这里统一两个入口，把「保存失败」变成可观测、且（对用户动作）可回传的失败。
+// For admin actions, mutating memory and immediately returning {"ok":true} is not enough: when the disk is full, the file is locked (a common case on Windows
+// ), or the directory is read-only, the change disappears after a restart while the caller still receives success.
+// Two entry points are unified here to make "save failure" observable and, for user actions, returnable to the caller.
 
-// persist 落盘并记录失败，不改变接口返回。
+// persist writes to disk and records the failure without changing the interface's return value.
 //
-// 用于「结果已经产生、保存只是尽力而为」的场景：后台探测结果、登录入池收尾、
-// 扩展端点的实时用量。失败会留下一行 warn 日志，但不必让本次请求失败。
+// Used for cases where the result is already produced and saving is best-effort: background probe results, login-and-pool finalization,
+// and real-time usage of extension endpoints. A failure leaves a warn log line but does not need to fail the current request.
 func (s *Server) persist() {
 	if err := s.Store.Save(); err != nil {
 		logx.Warn("状态文件保存失败（改动仅存在于内存）", "err", err, "path", s.Store.Path())
 	}
 }
 
-// persistOrFail 落盘；失败时回 500 并返回 false，调用方应立即 return。
+// persistOrFail writes to disk; on failure it returns 500 and false, and the caller should return immediately.
 //
-// 用于用户主动触发的改动（增删密钥、改设置、账号治理）：这类操作的语义就是
-// 「已持久化」，静默吞掉失败等于骗调用方。
+// Used for changes actively triggered by the user (adding/removing keys, changing settings, account governance): the semantics of such operations is
+// "persisted"; silently swallowing the failure is lying to the caller.
 func (s *Server) persistOrFail(w http.ResponseWriter) bool {
 	if err := s.Store.Save(); err != nil {
 		logx.Warn("状态文件保存失败", "err", err, "path", s.Store.Path())

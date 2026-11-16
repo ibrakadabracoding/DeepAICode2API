@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// breakStatePath 让下一次 Store.Save 必然失败：把状态文件换成同名目录。
+// breakStatePath makes the next Store.Save fail necessarily: replace the state file with a directory of the same name.
 //
-// rename(临时文件 → 目标) 在 Linux 与 Windows 上都会失败，比改权限可靠
-// （Windows 上目录只读位基本拦不住写入）。
+// rename(temp file → target) fails on both Linux and Windows, which is more reliable than changing permissions
+// (on Windows the read-only bit on a directory basically does not block writes).
 func breakStatePath(t *testing.T, s *Server) {
 	t.Helper()
 	path := s.Store.Path()
@@ -21,10 +21,10 @@ func breakStatePath(t *testing.T, s *Server) {
 	}
 }
 
-// TestAdminMutationReportsSaveFailure 锁死「用户主动改动必须报告落盘失败」。
+// TestAdminMutationReportsSaveFailure locks down "user-initiated changes must report persist-to-disk failures".
 //
-// 历史行为：`_ = s.Store.Save()` 吞掉错误，磁盘满 / 文件被占用时接口回 200，
-// 改动只活在内存里，重启即丢且无任何日志线索。
+// Historical behavior: `_ = s.Store.Save()` swallowed the error, so when the disk was full or the file was in use the API returned 200,
+// and the change only lived in memory, lost on restart with no log trace whatsoever.
 func TestAdminMutationReportsSaveFailure(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	before := len(s.Store.Keys())
@@ -39,10 +39,10 @@ func TestAdminMutationReportsSaveFailure(t *testing.T) {
 	}
 }
 
-// TestAdminKeysRejectsMalformedJSON 覆盖「畸形请求体被静默当成空请求」。
+// TestAdminKeysRejectsMalformedJSON covers "malformed request bodies being silently treated as empty requests".
 //
-// 历史行为：decode 错误被忽略 → POST /admin/api/keys 发错字段时会建出一把
-// 空名字的密钥并回 200。
+// Historical behavior: decode errors were ignored → sending the wrong fields to POST /admin/api/keys would create a
+// key with an empty name and return 200.
 func TestAdminKeysRejectsMalformedJSON(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	before := len(s.Store.Keys())
@@ -55,7 +55,7 @@ func TestAdminKeysRejectsMalformedJSON(t *testing.T) {
 		t.Fatalf("畸形请求不应创建密钥：%d → %d", before, got)
 	}
 
-	// 空体仍然合法：等价于「用默认参数新建一把密钥」。
+	// An empty body is still valid: equivalent to "creating a new key with default parameters".
 	rec = do(t, s, http.MethodPost, "/admin/api/keys", "", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("空体状态码 = %d，期望 200：%s", rec.Code, rec.Body.String())

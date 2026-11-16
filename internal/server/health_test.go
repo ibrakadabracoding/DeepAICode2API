@@ -9,13 +9,13 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// /health 的 ready 口径直接决定控制台顶部那颗胶囊（“账号 N/M 就绪”）。
+// /health's ready criteria directly determine the capsule at the top of the console ("accounts N/M ready").
 //
-// 回归背景：旧实现用 `enabled && status != "error"`，于是
-//   - 一次概率性 EOF / 429 就把号永久算成不健康（徽章长期 1/16）；
-//   - 反而把 blocked（不会自愈的账号级拦截）算成健康。
+// Regression context: the old implementation used `enabled && status != "error"`, so
+// - a single probabilistic EOF / 429 permanently marked the account as unhealthy (badge stuck at 1/16 for a long time);
+// - conversely, blocked (an account-level block that will not self-heal) was counted as healthy.
 //
-// 这组测试把三条口径都钉住：陈旧错误算就绪、blocked 不算、新鲜错误进 degraded。
+// This set of tests pins down all three criteria: stale errors count as ready, blocked does not, and fresh errors go to degraded.
 func TestHealthReadySemantics(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
@@ -23,7 +23,7 @@ func TestHealthReadySemantics(t *testing.T) {
 	stale := time.Now().Add(-deepai.ErrorStaleAfter - time.Minute).Unix()
 	fresh := time.Now().Unix()
 
-	// 已有 acc-1（ok）。再补：陈旧 error、新鲜 error、blocked、停用。
+	// acc-1 (ok) already exists. Add: stale error, fresh error, blocked, disabled.
 	s.Store.UpsertAccount(&deepai.Account{ID: "stale-err", Name: "stale", APIKey: "k-stale",
 		Enabled: true, Status: deepai.StatusError, LastErrAt: stale})
 	s.Store.UpsertAccount(&deepai.Account{ID: "fresh-err", Name: "fresh", APIKey: "k-fresh",
@@ -48,7 +48,7 @@ func TestHealthReadySemantics(t *testing.T) {
 		"degraded": int(body["degraded"].(float64)),
 		"blocked":  int(body["blocked"].(float64)),
 	}
-	// acc-1(ok) + stale-err(陈旧=就绪) = 2；fresh-err/blocked/off 不算就绪。
+	// acc-1(ok) + stale-err (stale = ready) = 2; fresh-err/blocked/off do not count as ready.
 	want := map[string]int{"accounts": 5, "ready": 2, "degraded": 1, "blocked": 1}
 	for k, w := range want {
 		if got[k] != w {

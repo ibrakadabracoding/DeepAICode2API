@@ -18,22 +18,22 @@ import (
 	"deepaicode2api/internal/logx"
 )
 
-// itoa64 / ftoa 是 Prometheus 文本格式的必填转换。
+// itoa64 / ftoa are the required conversions for the Prometheus text format.
 func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 func ftoa(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-// --- 可观测性：request id / 访问日志 / /metrics ---
+// --- Observability: request id / access log / /metrics ---
 //
-// 三件事放在一层中间件里完成，而不是散在各 handler：
-//   - request id：生成并回写 X-Request-Id（CORS 早已在 Expose-Headers 里
-//     声明了它，但此前从未真正生成过），日志与响应因此可以互相对上；
-//   - 访问日志：一行 JSON（method/path/status/ms/bytes/remote/request_id），
-//     静态资源除外，避免刷屏；
-//   - 指标：把状态码分类、耗时总计、在途请求数记进原子计数器，供 /metrics 导出。
+// These three things are done in a single middleware layer instead of being scattered across handlers:
+// - request id: generate and write back X-Request-Id (CORS already declared it in Expose-Headers,
+// but it was never actually generated before), so logs and responses can be correlated;
+// - access log: one line of JSON (method/path/status/ms/bytes/remote/request_id),
+// excluding static assets to avoid log spam;
+// - metrics: record status code classes, total latency, and in-flight request count into atomic counters for /metrics export.
 
 type requestIDKey struct{}
 
-// requestID 从上下文取 request id（没有则返回空串）。
+// requestID gets the request id from the context (returns an empty string if absent).
 func requestID(ctx context.Context) string {
 	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
 		return v
@@ -41,17 +41,17 @@ func requestID(ctx context.Context) string {
 	return ""
 }
 
-// newRequestID 生成 16 位 hex 的请求号。
+// newRequestID generates a 16-character hex request number.
 func newRequestID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// 随机源不可用时退化为时间戳：request id 只用于关联日志，不需要密码学强度。
+		// When the random source is unavailable, fall back to a timestamp: request ids are only used to correlate logs and do not need cryptographic strength.
 		return fmt.Sprintf("%016x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// sanitizeRequestID 只接受长度可控、字符集安全的传入 id（便于跨服务串联）。
+// sanitizeRequestID only accepts incoming ids with bounded length and a safe character set (to facilitate cross-service tracing).
 func sanitizeRequestID(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" || len(s) > 64 {
@@ -68,10 +68,10 @@ func sanitizeRequestID(s string) string {
 	return s
 }
 
-// statusWriter 记录状态码与响应字节数，并透传 Flush / Unwrap。
+// statusWriter records the status code and response byte count, and passes through Flush / Unwrap.
 //
-// Unwrap 是必须的：http.ResponseController 与部分中间件靠它拿到底层
-// ResponseWriter（本项目虽未用 ResponseController，但保留以免将来踩坑）。
+// Unwrap is required: http.ResponseController and some middleware rely on it to get the underlying
+// ResponseWriter (this project does not use ResponseController, but keep it to avoid pitfalls in the future).
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -102,7 +102,7 @@ func (w *statusWriter) Flush() {
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// metrics 是进程内的轻量指标计数（不持久化、重启清零）。
+// metrics is lightweight in-process metric counting (not persisted, reset on restart).
 type metrics struct {
 	requests atomic.Int64
 	c2xx     atomic.Int64
@@ -113,7 +113,7 @@ type metrics struct {
 	durCount atomic.Int64
 	inflight atomic.Int64
 
-	// 扩展指标（见 metrics.go）：签到 / 上游错误 / 兜底 / 分端点延迟。
+	// Extended metrics (see metrics.go): check-in / upstream errors / fallback / per-endpoint latency.
 	checkinAttempts atomic.Int64
 	checkinBlocked  atomic.Int64
 	checkinTimeouts atomic.Int64
@@ -123,17 +123,17 @@ type metrics struct {
 
 func newMetrics() *metrics { return &metrics{extra: newExtraMetrics()} }
 
-// observe 记录一次请求（status + 耗时 + 端点分布）。
+// observe records one request (status + latency + endpoint distribution).
 func (m *metrics) observe(endpoint string, status int, d time.Duration) {
 	m.observeBasic(status, d)
 	m.observeDuration(endpoint, d.Seconds())
 }
 
-// observeBasic 只记状态码与总耗时，不进分端点 / 分位直方图。
+// observeBasic only records the status code and total latency, without per-endpoint / quantile histograms.
 //
-// /admin/* 用它：控制台自己的请求如果也进延迟直方图，/admin/api/overview
-// 的响应体就会因为「上一次 overview 的耗时」而每次变化，ETag 永远命中不了
-// （TestOverviewETag 就是这么暴露的）。管理接口不是延迟 SLI。
+// /admin/* uses it: if the console's own requests also went into the latency histogram, /admin/api/overview
+// The response body changes every time because of "the duration of the previous overview", so the ETag can never hit
+// (this is exactly how TestOverviewETag exposed it). The admin API is not a latency SLI.
 func (m *metrics) observeBasic(status int, d time.Duration) {
 	m.requests.Add(1)
 	switch {
@@ -150,11 +150,11 @@ func (m *metrics) observeBasic(status int, d time.Duration) {
 	m.durCount.Add(1)
 }
 
-// isStaticAsset 判断是否属于无需访问日志的静态资源。
+// isStaticAsset determines whether a resource is static and needs no access log.
 func isStaticAsset(path string) bool {
 	switch {
-	// favicon / apple-touch-icon 也在这里：浏览器每次打开页面都会自动请求它们，
-	// 不进这个白名单就变成每条控制台访问都多两行日志。
+	// favicon / apple-touch-icon are also here: the browser automatically requests them every time a page is opened,
+	// if they are not in this whitelist, every console visit gets two extra log lines.
 	case path == "/style.css", path == "/ping",
 		path == "/favicon.ico", path == "/apple-touch-icon.png":
 		return true
@@ -164,7 +164,7 @@ func isStaticAsset(path string) bool {
 	return false
 }
 
-// withObservability 装上 request id、访问日志与指标。
+// withObservability installs the request id, access log, and metrics.
 func (s *Server) withObservability(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := sanitizeRequestID(r.Header.Get("X-Request-Id"))
@@ -206,16 +206,16 @@ func (s *Server) withObservability(next http.Handler) http.Handler {
 	})
 }
 
-// poolSnapshot 是号池健康度的一次快照（控制台与 /metrics 共用口径）。
+// poolSnapshot is a snapshot of account pool health (the console and /metrics share the same definition).
 type poolSnapshot struct {
 	Total, Ready, Degraded, Blocked int
 	QuotaFresh, QuotaDue            int
 }
 
-// poolSnapshot 计算号池健康度。
+// poolSnapshot computes account pool health.
 //
-// 口径与 /health 完全一致（AccountReady / AccountDegraded / 额度时效），
-// 抽出来是为了避免控制台徽章与 Prometheus 指标给出互相矛盾的数。
+// The definition is exactly the same as /health (AccountReady / AccountDegraded / quota freshness),
+// it was extracted to avoid the console badge and Prometheus metrics reporting contradictory numbers.
 func (s *Server) poolSnapshot() poolSnapshot {
 	var out poolSnapshot
 	now := time.Now()
@@ -241,9 +241,9 @@ func (s *Server) poolSnapshot() poolSnapshot {
 	return out
 }
 
-// handleMetrics 输出 Prometheus 文本格式指标。
+// handleMetrics outputs metrics in Prometheus text format.
 //
-// 挂 withAdminAuth：里面含号池规模与请求量，和 /admin/api/* 同级。
+// Mount withAdminAuth: it contains account pool size and request volume, the same level as /admin/api/*.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET", "invalid_request_error")
@@ -269,7 +269,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		[2]string{`gateway_requests_total{class="4xx"}`, itoa64(m.c4xx.Load())},
 		[2]string{`gateway_requests_total{class="5xx"}`, itoa64(m.c5xx.Load())},
 	)
-	// 耗时用 sum + count 表示：不保留分位数，避免进程内维护直方图的开销。
+	// Duration is represented with sum + count: no quantiles are kept, to avoid the overhead of maintaining histograms in-process.
 	counter("gateway_request_duration_seconds_sum", "请求耗时总和（秒）",
 		[2]string{"gateway_request_duration_seconds_sum", ftoa(float64(m.durSumNS.Load()) / float64(time.Second))})
 	counter("gateway_request_duration_seconds_count", "请求耗时样本数",
@@ -297,7 +297,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	gauge("go_memstats_heap_alloc_bytes", "堆上已分配字节数",
 		[2]string{"go_memstats_heap_alloc_bytes", itoa64(int64(ms.HeapAlloc))})
 
-	// 扩展指标（metrics.go）：分端点延迟、签到、兜底、上游错误码。
+	// Extended metrics (metrics.go): per-endpoint latency, check-in, fallback, upstream error codes.
 	snap := m.snapshot()
 	endpoints := make([]string, 0, len(snap.ByEndpoint))
 	for k := range snap.ByEndpoint {

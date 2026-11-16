@@ -4,10 +4,12 @@ import (
 	"time"
 )
 
-// admissionWait / admissionPoll 是「池里暂时没有空槽」时的排队上限与轮询间隔。
+// admissionWait / admissionPoll are the queue limit and polling interval used when
+// the pool temporarily has no free slot.
 //
-// 以前槽位不够就立刻 429（见 docs/performance.md §14：14 号 / 28 并发时
-// 成功率只有 48~70%）。短暂排队能把突发流量摊平，又不至于把调用方挂死。
+// Previously a lack of slots returned 429 immediately (see docs/performance.md §14:
+// at 14 accounts / 28 concurrent requests the success rate was only 48~70%). Brief
+// queuing smooths out bursts without hanging the caller.
 const (
 	admissionWait = 2 * time.Second
 	admissionPoll = 50 * time.Millisecond

@@ -12,9 +12,9 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// --- 账号管理接口与配额巡检 ---
+// --- Account management endpoints and quota inspection ---
 
-// 账号管理接口的 action 取值。
+// Action values for the account management endpoint.
 const (
 	actionImport        = "import"
 	actionManual        = "manual"
@@ -29,7 +29,7 @@ const (
 )
 
 func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
-	// 同一路径按方法分发：GET 走分页查询，POST 走变更操作。
+	// Same path, dispatched by method: GET runs a paginated query, POST runs a mutation.
 	if r.Method == http.MethodGet {
 		s.handleAdminAccountsPage(w, r)
 		return
@@ -38,7 +38,8 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET / POST", "invalid_request_error")
 		return
 	}
-	// 两步解析：先取 action，再让具体 action 解自己的字段（见 admin_actions.go）。
+	// Two-step decoding: read the action first, then let that action decode its own
+	// fields (see admin_actions.go).
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "请求体解析失败", "invalid_request_error")
@@ -56,17 +57,19 @@ func (s *Server) handleAdminAccounts(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteErr(w, http.StatusBadRequest, "未知操作: "+env.Action, "invalid_request_error")
 }
 
-// handleAdminCheckin 对一批账号查询 Theos 配额。
+// handleAdminCheckin queries Theos quota for a batch of accounts.
 //
-// 可选参数：
-//   - id：只探这个账号；
-//   - group：只探该分组的账号；
-//   - stale_only：只探额度已过时（refresh_at 已过 / 从未探 / 超 15 分钟）的账号；
-//   - limit：本批最多探多少个（默认与上限都是 maxCheckinBatch）。
+// Optional parameters:
+//   - id: probe only this account;
+//   - group: probe only accounts in this group;
+//   - stale_only: probe only accounts whose quota is stale (refresh_at passed / never probed / older than 15 minutes);
+//   - limit: maximum number to probe in this batch (default and cap are both maxCheckinBatch).
 //
-// 响应带 total / probed / remaining：653 号的池子全量探测要 11 分钟，
-// 单次请求只做一批，控制台按 remaining 继续下一批（探过的 checked_at 会
-// 推到现在，下一批自然取到没探过的，不会重复烧额度）。
+// The response carries total / probed / remaining: a full sweep of a 653-account pool
+// takes 11 minutes, so a single request only does one batch, and the console continues
+// with the next batch according to remaining (probed accounts have checked_at advanced
+// to now, so the next batch naturally picks the unprobed ones and does not burn quota
+// twice).
 func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID        string `json:"id"`
@@ -74,7 +77,8 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		Limit     int    `json:"limit"`
 		StaleOnly bool   `json:"stale_only"`
 	}
-	// 可以不传参数（等价于「探一批全部账号」），但畸形 JSON 必须报错。
+	// Parameters may be omitted (equivalent to "probe one batch of all accounts"), but
+	// malformed JSON must be rejected.
 	if !httpx.DecodeOptionalJSON(w, r, &body) {
 		return
 	}
@@ -100,7 +104,8 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	total := len(targets)
 
-	// 优先探「额度刚刷新 / 从未探过」的，分批才有意义。
+	// Prioritize accounts whose quota just refreshed / was never probed; only then does
+	// batching make sense.
 	sortByQuotaDue(targets, now)
 	limit := body.Limit
 	if limit <= 0 || limit > maxCheckinBatch {
@@ -111,9 +116,10 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		batch = batch[:limit]
 	}
 
-	// 页面关掉也把这批探完：结果会落盘，重新打开就能看到。
-	// 没有 WithoutCancel 时，浏览器一切换标签页（fetch 被 abort）
-	// 就会让半批账号停在旧状态，控制台看起来像“刷新失败”。
+	// Finish the batch even if the page is closed: results are persisted to disk and
+	// visible when the page reopens. Without WithoutCancel, switching browser tabs
+	// (which aborts the fetch) would leave half the batch in its old state, and the
+	// console would look like a "refresh failed".
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
 	defer cancel()
 	out := s.probeBatch(ctx, batch, 30*time.Second, true)
@@ -128,10 +134,11 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		item := map[string]any{"id": o.Account.ID, "name": o.Account.Name}
 		switch {
 		case o.Skipped:
-			// 已有探测在跑：既不算失败，也不算这次探过，所以**不进 settled**。
-			// 进 settled 会让 remaining 把它当成「已探过」而收敛，而它其实还
-			// 处于未知状态；不进则下一批会把它重新算进 remaining，等另一路
-			// 探完自然就散了。
+			// A probe is already running: this is neither a failure nor a probe done in
+			// this round, so it does **not** go into settled. Putting it there would make
+			// remaining treat it as "already probed" and converge, even though its state
+			// is still unknown; leaving it out makes the next batch count it in remaining
+			// again, and it clears once the other probe finishes.
 			item["ok"] = true
 			item["skipped"] = true
 			item["note"] = "已有探测在进行"
@@ -152,8 +159,8 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 		results = append(results, item)
 	}
 
-	// remaining 是「过滤集里仍然过期、且不在本批里」的账号数，而不是
-	// total - probed：否则每次分批都剩同一批在途/失败的号，控制台会反复重试。
+	// remaining is the number of accounts in the filtered set that are still expired and not in this batch, not
+	// total - probed: otherwise each batch leaves the same in-flight/failed accounts behind, and the console will retry them repeatedly.
 	remaining := 0
 	for _, a := range targets {
 		if settled[a.ID] {
@@ -167,8 +174,8 @@ func (s *Server) handleAdminCheckin(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"total":     total,
-		"probed":    probed,              // 真正发起探测的账号数（skipped 不算）
-		"skipped":   len(batch) - probed, // 已有探测在跑、本轮跳过的
+		"probed":    probed,              // Number of accounts that actually initiated probing (skipped not counted)
+		"skipped":   len(batch) - probed, // Skipped this round because a probe is already running
 		"remaining": remaining,
 		"results":   results,
 	})

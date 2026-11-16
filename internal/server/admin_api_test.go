@@ -11,7 +11,8 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// overview 只应包含不随账号数增长的元信息，不含账号列表。
+// overview should contain only metadata that does not grow with the number of
+// accounts, never the account list.
 func TestOverviewEndpointShape(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -28,7 +29,7 @@ func TestOverviewEndpointShape(t *testing.T) {
 			t.Fatalf("overview 缺少字段 %q", k)
 		}
 	}
-	// 账号列表必须走分页端点，overview 不应下发。
+	// The account list must go through the paginated endpoint; overview should not send it.
 	if _, ok := d["items"]; ok {
 		t.Fatal("overview 不应包含 items")
 	}
@@ -37,7 +38,7 @@ func TestOverviewEndpointShape(t *testing.T) {
 	}
 }
 
-// 分页端点应遵守 offset/limit 并返回过滤后的 total。
+// The paginated endpoint should honor offset/limit and return the filtered total.
 func TestAccountsPageEndpoint(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	for _, id := range []string{"b1", "b2"} {
@@ -63,7 +64,7 @@ func TestAccountsPageEndpoint(t *testing.T) {
 	if len(page.Items) != 2 {
 		t.Fatalf("items = %d，期望 2", len(page.Items))
 	}
-	// 下发的是投影：必须有掩码 key，且不含密码。
+	// The payload is a projection: it must include a masked key and must not contain the password.
 	if _, ok := page.Items[0]["key"]; !ok {
 		t.Fatal("缺少 key 投影")
 	}
@@ -71,7 +72,7 @@ func TestAccountsPageEndpoint(t *testing.T) {
 		t.Fatal("不应下发密码")
 	}
 
-	// 分组过滤
+	// Group filtering.
 	rec = do(t, s, http.MethodGet, "/admin/api/accounts?group=g2", key, "")
 	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("解析: %v", err)
@@ -81,7 +82,7 @@ func TestAccountsPageEndpoint(t *testing.T) {
 	}
 }
 
-// 空闲刷新应命中 ETag 返回 304。
+// An idle refresh should hit the ETag and return 304.
 func TestOverviewETag(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -103,7 +104,7 @@ func TestOverviewETag(t *testing.T) {
 	}
 }
 
-// 兼容端点支持 ?accounts=0 只取元信息。
+// The compatibility endpoint supports ?accounts=0 to fetch only metadata.
 func TestStateEndpointCanOmitAccounts(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -123,7 +124,7 @@ func TestStateEndpointCanOmitAccounts(t *testing.T) {
 	}
 }
 
-// 日志端点应接受过滤参数。
+// The logs endpoint should accept filter parameters.
 func TestLogsEndpointFilters(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	s.Store.Record(store.LogEntry{Time: 1, Endpoint: "chat", Status: 200}, 0)
@@ -144,10 +145,12 @@ func TestLogsEndpointFilters(t *testing.T) {
 	}
 }
 
-// TestLogsEndpointRejectsUnsupportedMethod 守住 /admin/api/logs 的方法集合。
+// TestLogsEndpointRejectsUnsupportedMethod guards the allowed method set for
+// /admin/api/logs.
 //
-// 以前只拦 DELETE：POST / PUT 会落到「查询」分支，把日志原样回包。调用方看到
-// 200 很容易以为是「写成功了」，实际什么都没发生。
+// Previously only DELETE was rejected: POST / PUT fell through to the "query" branch and
+// echoed the logs back unchanged. Callers seeing 200 easily assumed the write had
+// succeeded when nothing had happened.
 func TestLogsEndpointRejectsUnsupportedMethod(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	s.Store.Record(store.LogEntry{Time: 1, Endpoint: "chat", Status: 200}, 0)
@@ -161,7 +164,7 @@ func TestLogsEndpointRejectsUnsupportedMethod(t *testing.T) {
 			t.Errorf("%s /admin/api/logs 仍回了日志体：%s", m, rec.Body.String())
 		}
 	}
-	// GET / DELETE 必须照旧。
+	// GET / DELETE must keep working as before.
 	if rec := do(t, s, http.MethodGet, "/admin/api/logs", key, ""); rec.Code != http.StatusOK {
 		t.Errorf("GET = %d，期望 200", rec.Code)
 	}

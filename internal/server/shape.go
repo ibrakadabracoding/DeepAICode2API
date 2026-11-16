@@ -6,21 +6,21 @@ import (
 	"time"
 )
 
-// 请求体形状的「学习记忆」。
+// Learned memory of request body shape.
 //
-// 2026-11-13 线上：同一台机器 + node UA + 缺 system 的请求会被上游 400
-// （This request cannot be accepted.）。网关目前的策略是「先透传 → 400 →
-// 补形状重试」，每个这类请求都要多打一次上游（线上 82 分钟 99 次）。
+// 2026-11-13 production: requests from the same machine + node UA + missing system get a 400 from upstream
+// (This request cannot be accepted.). The gateway's current strategy is "pass through first → 400 →
+// patch shape and retry", so each such request hits upstream one extra time (99 times in 82 minutes in production).
 //
-// 记忆按 API Key 的哈希（不是明文）保存 10 分钟：一旦某个调用方被确认需要
-// 桌面端形状，后续缺 system 的请求在**第一次发送前**就补上 system，省掉
-// 那次注定失败的往返；调用方自己带 system 时不做任何改写。
+// Memory is stored for 10 minutes keyed by the API Key hash (not plaintext): once a caller is confirmed to need
+// the desktop shape, subsequent requests missing system get system patched in **before the first send**, saving
+// that doomed round trip; if the caller supplies system itself, no rewriting is done.
 //
-// 只在 Settings.PresetDesktopShape 打开时生效（默认关闭）：
-// 这是采样语义变更（多一条 system），要显式选择。
+// Only takes effect when Settings.PresetDesktopShape is enabled (off by default):
+// this is a sampling semantics change (one extra system message), so it must be opted into explicitly.
 const (
 	presetShapeTTL = 10 * time.Minute
-	// presetShapeMax 限制记忆条目数，避免被随机 key 打爆内存。
+	// presetShapeMax limits the number of memory entries to avoid memory blowup from random keys.
 	presetShapeMax = 1024
 )
 
@@ -32,7 +32,7 @@ func shapeCacheKey(apiKey string) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-// shapeNeeded 报告该调用方最近是否被上游按形状拒绝过。
+// shapeNeeded reports whether this caller was recently rejected by upstream for shape.
 func (s *Server) shapeNeeded(apiKey string) bool {
 	k := shapeCacheKey(apiKey)
 	if k == "" {
@@ -51,7 +51,7 @@ func (s *Server) shapeNeeded(apiKey string) bool {
 	return true
 }
 
-// markShapeNeeded 记住「该调用方需要桌面端形状」。
+// markShapeNeeded remembers that "this caller needs the desktop shape".
 func (s *Server) markShapeNeeded(apiKey string) {
 	k := shapeCacheKey(apiKey)
 	if k == "" {
@@ -63,7 +63,7 @@ func (s *Server) markShapeNeeded(apiKey string) {
 		s.shapeNeed = map[string]time.Time{}
 	}
 	if len(s.shapeNeed) >= presetShapeMax {
-		// 简单清理：先删过期项；仍然超限就整体重建（宁可忘掉旧记忆）。
+		// Simple cleanup: delete expired entries first; if still over the limit, rebuild entirely (better to forget old memories).
 		now := time.Now()
 		for key, until := range s.shapeNeed {
 			if now.After(until) {

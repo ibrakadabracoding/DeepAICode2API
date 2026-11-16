@@ -11,21 +11,21 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 本文件是 /metrics 与 /admin/api/overview 的**扩展**指标层。
+// This file is the **extended** metrics layer for /metrics and /admin/api/overview.
 //
-// 设计取舍：
-//   - 零依赖：自己维护定桶直方图，不引入 Prometheus 客户端；
-//   - 低基数：端点只分 chat / responses / messages / other，上游错误按
-//     (path, code, status) 聚合并限制条目数，避免被异常流量打爆内存；
-//   - 与旧指标共存：原来的 requests/2xx..5xx/durSum 保留，控制台不破。
+// Design trade-offs:
+// - Zero dependencies: maintain fixed-bucket histograms ourselves, without pulling in a Prometheus client;
+// - Low cardinality: endpoints are only split into chat / responses / messages / other, and upstream errors are aggregated by
+// (path, code, status) with a cap on entries, to avoid memory blowup from abnormal traffic;
+// - Coexist with legacy metrics: the original requests/2xx..5xx/durSum are kept, so the console does not break.
 
-// 延迟桶（秒）。覆盖免费模型的百毫秒级到深度思考的分钟级。
+// Latency buckets (seconds). Covers the hundreds-of-milliseconds range of free models up to the minutes-long range of deep thinking.
 var defaultBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600}
 
-// hist 是定桶直方图：只保留每桶计数 + sum/count，够算 p50/p95/p99。
+// hist is a fixed-bucket histogram: it only keeps per-bucket counts + sum/count, which is enough to compute p50/p95/p99.
 type hist struct {
 	bounds []float64
-	counts []uint64 // len(bounds)+1，最后一桶是 +Inf
+	counts []uint64 // len(bounds)+1, the last bucket is +Inf
 	sum    float64
 	total  uint64
 }
@@ -41,10 +41,10 @@ func (h *hist) observe(v float64) {
 	h.total++
 }
 
-// quantile 返回 q 分位所在桶的上界（q 取 0~1）。
+// quantile returns the upper bound of the bucket containing the q quantile (q in 0~1).
 //
-// 返回桶上界而不是线性插值：调用方要的是"p95 落在 2s 这一档"，插值反而
-// 会给出一个没有样本支撑的精确假象。
+// Returning the bucket upper bound instead of linear interpolation: callers want "p95 falls in the 2s bucket", whereas interpolation would
+// give a precise-looking illusion unsupported by samples.
 func (h *hist) quantile(q float64) float64 {
 	if h == nil || h.total == 0 {
 		return 0
@@ -72,7 +72,7 @@ func (h *hist) quantile(q float64) float64 {
 	return h.bounds[len(h.bounds)-1]
 }
 
-// histogramView 是直方图的 JSON / Prometheus 视图。
+// histogramView is the JSON / Prometheus view of a histogram.
 type histogramView struct {
 	Bounds []float64 `json:"bounds"`
 	Counts []uint64  `json:"counts"`
@@ -89,7 +89,7 @@ func (h *hist) view() histogramView {
 	return histogramView{Bounds: bounds, Counts: counts, Sum: h.sum, Total: h.total}
 }
 
-// endpointLabel 把 URL 路径收敛成低基数标签。
+// endpointLabel collapses URL paths into low-cardinality labels.
 func endpointLabel(path string) string {
 	switch path {
 	case "/v1/chat/completions":
@@ -102,20 +102,20 @@ func endpointLabel(path string) string {
 	return "other"
 }
 
-// extraMetrics 是扩展指标（需要互斥锁的那部分）。
+// extraMetrics holds the extended metrics (the part that needs a mutex).
 type extraMetrics struct {
 	mu sync.Mutex
-	// endpointDur 按端点分桶，用于回答"哪个端点在变慢"。
+	// endpointDur buckets by endpoint, to answer "which endpoint is getting slower".
 	endpointDur map[string]*hist
-	// upstreamErr 按 (path, code, status) 聚合上游错误。
+	// upstreamErr aggregates upstream errors by (path, code, status).
 	upstreamErr map[string]int64
-	// upstreamErrCap 限制条目数；溢出后全部记到 overflow 键。
+	// upstreamErrCap limits the number of entries; once overflowed, everything is recorded under the overflow key.
 	upstreamErrCap int
-	// checkinDur 是同步签到等待的耗时分布。
+	// checkinDur is the latency distribution of synchronous check-in waits.
 	checkinDur *hist
-	// admissionDur 是账号全忙时的排队等待分布。
+	// admissionDur is the queue-wait distribution when all accounts are busy.
 	admissionDur *hist
-	// durHist 是全部请求的耗时分布（与 endpointDur 之和一致）。
+	// durHist is the latency distribution of all requests (consistent with the sum of endpointDur).
 	durHist *hist
 }
 
@@ -130,7 +130,7 @@ func newExtraMetrics() *extraMetrics {
 	}
 }
 
-// observeDuration 记录一次请求耗时（秒）。
+// observeDuration records the duration of one request (seconds).
 func (m *metrics) observeDuration(endpoint string, sec float64) {
 	x := m.extra
 	x.mu.Lock()
@@ -144,7 +144,7 @@ func (m *metrics) observeDuration(endpoint string, sec float64) {
 	h.observe(sec)
 }
 
-// observeUpstreamError 记录一次上游拒绝（含错误码）。
+// observeUpstreamError records one upstream rejection (including the error code).
 func (m *metrics) observeUpstreamError(path, code string, status int) {
 	if code == "" {
 		code = "unknown"
@@ -159,7 +159,7 @@ func (m *metrics) observeUpstreamError(path, code string, status int) {
 	x.upstreamErr[key]++
 }
 
-// observeCheckIn 记录一次推理前的签到尝试。
+// observeCheckIn records one check-in attempt before inference.
 func (m *metrics) observeCheckIn(outcome deepai.CheckInOutcome) {
 	if !outcome.Attempted {
 		return
@@ -178,7 +178,7 @@ func (m *metrics) observeCheckIn(outcome deepai.CheckInOutcome) {
 	x.mu.Unlock()
 }
 
-// observeAdmissionWait 记录一次"账号全忙"的排队等待（秒）。
+// observeAdmissionWait records one "all accounts busy" queue wait (seconds).
 func (m *metrics) observeAdmissionWait(d time.Duration) {
 	if d <= 0 {
 		return
@@ -189,10 +189,10 @@ func (m *metrics) observeAdmissionWait(d time.Duration) {
 	x.mu.Unlock()
 }
 
-// addFallback 记录一次「请求体形状被拒 → 补形状重试」。
+// addFallback records one "request body shape rejected → patch shape and retry".
 func (m *metrics) addFallback() { m.fallbackTotal.Add(1) }
 
-// metricsSnapshot 是给控制台概览的聚合视图。
+// metricsSnapshot is the aggregated view for the console overview.
 type metricsSnapshot struct {
 	Latency      histogramView            `json:"latency"`
 	ByEndpoint   map[string]histogramView `json:"by_endpoint"`
@@ -210,7 +210,7 @@ type upstreamErrView struct {
 	Count  int64  `json:"count"`
 }
 
-// snapshot 取一次一致性快照（按数量排序，最多 8 条上游错误）。
+// snapshot takes a consistent snapshot (sorted by count, at most 8 upstream errors).
 func (m *metrics) snapshot() metricsSnapshot {
 	x := m.extra
 	x.mu.Lock()
@@ -263,7 +263,7 @@ func splitErrKey(key string) (string, string, int) {
 	return parts[0], parts[1], status
 }
 
-// splitNUL 避免在热路径引入 strings.Split 的额外语义（这里只按 \x00 切）。
+// splitNUL avoids introducing the extra semantics of strings.Split on the hot path (here it only splits on \x00).
 func splitNUL(s string) []string {
 	out := make([]string, 0, 3)
 	start := 0
@@ -276,16 +276,16 @@ func splitNUL(s string) []string {
 	return append(out, s[start:])
 }
 
-// quantileMs 返回毫秒分位（0 表示没有样本）。
+// quantileMs returns the millisecond quantile (0 means no samples).
 func quantileMs(view histogramView, q float64) float64 {
 	h := &hist{bounds: view.Bounds, counts: view.Counts, sum: view.Sum, total: view.Total}
 	return h.quantile(q) * 1000
 }
 
-// appendHistogram 输出一个 Prometheus 直方图（含 +Inf 桶与 sum/count）。
+// appendHistogram outputs a Prometheus histogram (including the +Inf bucket and sum/count).
 //
-// labelName 为空表示无标签；否则按 labelName="labelValue" 输出。
-// 输出顺序固定（桶升序），便于 diff 与抓取端做稳定性检查。
+// An empty labelName means no label; otherwise output as labelName="labelValue".
+// The output order is fixed (buckets ascending) to make diffing and scrape-side stability checks easier.
 func appendHistogram(b *strings.Builder, name, help, labelName, labelValue string, v histogramView) {
 	label := ""
 	if labelName != "" {
@@ -304,7 +304,7 @@ func appendHistogram(b *strings.Builder, name, help, labelName, labelValue strin
 	fmt.Fprintf(b, "%s_count %d\n", name, v.Total)
 }
 
-// latencySummary 把直方图收敛成控制台要的三个分位（毫秒）。
+// latencySummary reduces the histogram to the three quantiles the console needs (milliseconds).
 func latencySummary(v histogramView) map[string]float64 {
 	return map[string]float64{
 		"p50_ms": quantileMs(v, 0.50),

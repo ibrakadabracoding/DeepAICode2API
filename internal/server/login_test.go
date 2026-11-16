@@ -11,9 +11,9 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 浏览器登录（含 Google 登录）回调只换来 API Key，不带机器指纹。
-// 入池时必须补一个独立 UUID：上游按机器发每日免费额度，沿用本机指纹会让
-// 多个号共用同一份额度（只有第一个能领到）。
+// Browser login (including Google login) callback only yields an API Key, without a machine fingerprint.
+// When adding to the pool, an independent UUID must be supplied: the upstream issues daily free quota per machine, and reusing the local machine fingerprint would cause
+// multiple accounts to share the same quota (only the first one can claim it).
 func TestLoginPollAssignsMachineID(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/theos") {
@@ -53,13 +53,13 @@ func TestLoginPollAssignsMachineID(t *testing.T) {
 	if strings.TrimSpace(acct.MachineID) == "" {
 		t.Fatal("浏览器登录入池未分配独立机器指纹")
 	}
-	// 入池会起一个后台探活：等它落盘完再返回，否则 TempDir 清理会与写入撞上。
+	// Adding to the pool starts a background health check: wait for it to persist to disk before returning, otherwise TempDir cleanup will race with the write.
 	s.waitQuotaReprobe()
 }
 
-// 浏览器登录入池时若配置了代理池（PROXY_POOL / PROXY_POOL_FILE），要按轮询
-// 分配出口：同一直连 IP 的每日免费额度是共享的。这里在同一 Server 上连续两次
-// 入池，验证游标在进程内持续前进（而不是每次都从第一个代理重新开始）。
+// When adding to the pool via browser login, if a proxy pool is configured (PROXY_POOL / PROXY_POOL_FILE), rotation must be used
+// to allocate egress: the daily free quota is shared for the same direct-connect IP. Here, two consecutive
+// pool additions on the same Server verify that the cursor keeps advancing within the process (rather than restarting from the first proxy each time).
 func TestLoginPollAssignsProxyFromPool(t *testing.T) {
 	t.Setenv("PROXY_POOL", "http://127.0.0.1:1,http://127.0.0.1:2")
 
@@ -102,7 +102,7 @@ func TestLoginPollAssignsProxyFromPool(t *testing.T) {
 	s.waitQuotaReprobe()
 }
 
-// 假上游：兑换 code，其余路径按需响应。
+// Fake upstream: redeems the code, other paths respond on demand.
 func loginUpstream(t *testing.T, apiKey, username string) *upstream {
 	t.Helper()
 	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,7 @@ func loginUpstream(t *testing.T, apiKey, username string) *upstream {
 	})
 }
 
-// 启动一次登录会话并返回 (session_id, state)。
+// Start a login session and return (session_id, state).
 func startLogin(t *testing.T, s *Server) (string, string) {
 	t.Helper()
 	rec := do(t, s, http.MethodPost, "/admin/api/login/start", "", `{}`)
@@ -147,8 +147,8 @@ func startLogin(t *testing.T, s *Server) (string, string) {
 	return out.SessionID, sess.State
 }
 
-// Docker / 远程部署时浏览器回调打不开，用户把地址栏 URL 粘回控制台，
-// 由网关用 code 兑换并完成入池 —— 等价于本机回调那条路。
+// In Docker / remote deployments the browser callback cannot be opened, so the user pastes the address bar URL back into the console,
+// and the gateway redeems the code and completes pool addition - equivalent to the local callback path.
 func TestLoginCallbackPasteCompletesLogin(t *testing.T) {
 	u := loginUpstream(t, "pasted-key", "pasted-user")
 	s, _ := newTestServer(t, u)
@@ -183,11 +183,11 @@ func TestLoginCallbackPasteCompletesLogin(t *testing.T) {
 	if s.Login.get(sid) != nil {
 		t.Error("登录完成后会话应被删除")
 	}
-	// 入池的探活 goroutine 会 Save() 落盘：等它收尾，否则 TempDir 清理会报
-	// “directory not empty”（CI 上的 -race 更容易命中）。
+	// The pool-addition health check goroutine calls Save() to persist to disk: wait for it to finish, otherwise TempDir cleanup will report
+	// "directory not empty" (more likely to hit with -race on CI).
 	s.waitQuotaReprobe()
 
-	// code 是一次性的：同一个 code 再粘一次不能重复入池。
+	// The code is one-time: pasting the same code again must not add to the pool twice.
 	again := do(t, s, http.MethodPost, "/admin/api/login/callback", "",
 		`{"session_id":"`+sid+`","callback":"`+cb+`"}`)
 	if again.Code == http.StatusOK {
@@ -195,7 +195,7 @@ func TestLoginCallbackPasteCompletesLogin(t *testing.T) {
 	}
 }
 
-// 只接受「本次登录」的回调：state 不匹配必须拒绝（防止贴错标签页）。
+// Only accept callbacks from "this login": a mismatched state must be rejected (to prevent pasting the wrong tab).
 func TestLoginCallbackRejectsForeignState(t *testing.T) {
 	u := loginUpstream(t, "k", "u")
 	s, _ := newTestServer(t, u)
@@ -212,7 +212,7 @@ func TestLoginCallbackRejectsForeignState(t *testing.T) {
 	}
 }
 
-// 只粘 code 拿不到 state，无法确认它属于本次登录：直接拒绝并给出提示。
+// Pasting only the code gives no state, so it cannot be confirmed as belonging to this login: reject directly with a hint.
 func TestLoginCallbackRejectsBareCode(t *testing.T) {
 	u := loginUpstream(t, "k", "u")
 	s, _ := newTestServer(t, u)
@@ -228,7 +228,7 @@ func TestLoginCallbackRejectsBareCode(t *testing.T) {
 	}
 }
 
-// 兑换失败（code 过期 / 已用过）要给可读提示，并结束会话。
+// Redemption failure (code expired / already used) must give a readable hint and end the session.
 func TestLoginCallbackExchangeFailure(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/desktop_auth/exchange/") {
@@ -256,10 +256,10 @@ func TestLoginCallbackExchangeFailure(t *testing.T) {
 	}
 }
 
-// TestLoginSessionsPrunesExpiredOnGet 覆盖会话回收：放弃的登录不能永久占着端口。
+// TestLoginSessionsPrunesExpiredOnGet covers session reclamation: an abandoned login must not hold the port forever.
 //
-// put 只在「发起新登录」时清理；用户放弃一次登录后再也不发起，会话与其回环
-// 监听就会一直留着。登录页的每次轮询 / 打开都会走 get，这里顺手回收。
+// put only cleans up when "starting a new login"; if the user abandons a login and never starts another, the session and its loopback
+// listener will stay forever. Every poll / open of the login page goes through get, so reclaim it there as a side effect.
 func TestLoginSessionsPrunesExpiredOnGet(t *testing.T) {
 	ls := newLoginSessions()
 	old := &loginSession{ID: "old", Created: time.Now()}
@@ -267,12 +267,12 @@ func TestLoginSessionsPrunesExpiredOnGet(t *testing.T) {
 	ls.put(old)
 	ls.put(fresh)
 
-	// put 之后再把 old 变旧，模拟「放了一段时间没人管」。
+	// After put, age old further to simulate "left unattended for a while".
 	ls.mu.Lock()
 	old.Created = time.Now().Add(-2 * loginTTL)
 	ls.mu.Unlock()
 
-	// 请求的会话即使过期也原样返回：调用方要靠它区分 expired 与 404。
+	// The requested session is returned as-is even if expired: callers rely on it to distinguish expired from 404.
 	if got := ls.get("old"); got == nil {
 		t.Fatal("被请求的过期会话仍应返回（由调用方判定 expired）")
 	}
@@ -283,7 +283,7 @@ func TestLoginSessionsPrunesExpiredOnGet(t *testing.T) {
 		t.Fatal("被请求的会话不应在 get 里被删掉")
 	}
 
-	// 换一个 id 请求：old 这次是「兄弟会话」，应被回收；fresh 不受影响。
+	// Request with a different id: old is now a "sibling session" and should be reclaimed; fresh is unaffected.
 	if got := ls.get("fresh"); got == nil {
 		t.Fatal("未过期会话不应被回收")
 	}

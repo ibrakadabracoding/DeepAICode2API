@@ -12,7 +12,7 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// TestShapeCacheTTLAndLimit 覆盖形状记忆的过期与条目上限。
+// TestShapeCacheTTLAndLimit covers expiration and entry limit of shape memory.
 func TestShapeCacheTTLAndLimit(t *testing.T) {
 	s := &Server{}
 	if s.shapeNeeded("k1") {
@@ -22,7 +22,7 @@ func TestShapeCacheTTLAndLimit(t *testing.T) {
 	if !s.shapeNeeded("k1") {
 		t.Fatal("标记后应命中")
 	}
-	// 过期：把到期时间拨到过去。
+	// Expiration: set the expiry time to the past.
 	s.shapeMu.Lock()
 	s.shapeNeed[shapeCacheKey("k1")] = pastTime()
 	s.shapeMu.Unlock()
@@ -30,7 +30,7 @@ func TestShapeCacheTTLAndLimit(t *testing.T) {
 		t.Fatal("过期条目不应命中")
 	}
 
-	// 超过上限后仍可用（内部会清理过期项 / 重建）。
+	// Still usable after exceeding the limit (expired entries are cleaned up / rebuilt internally).
 	for i := 0; i < presetShapeMax+10; i++ {
 		s.markShapeNeeded("key-" + strings.Repeat("x", i%7) + string(rune('a'+i%26)) + itoa64(int64(i)))
 	}
@@ -45,15 +45,15 @@ func TestShapeCacheTTLAndLimit(t *testing.T) {
 
 func pastTime() (t time.Time) { return time.Now().Add(-time.Minute) }
 
-// TestPresetDesktopShapeSkipsRejectedRoundTrip 固化 P1：
-// 第一次请求走「400 → 补形状重试」，之后的请求在第一次发送前就补 system，
-// 不再多打一次注定失败的上游请求。
+// TestPresetDesktopShapeSkipsRejectedRoundTrip locks in P1:
+// The first request goes through "400 → patch shape and retry"; subsequent requests patch system before the first send,
+// so no extra upstream request that is doomed to fail is made.
 func TestPresetDesktopShapeSkipsRejectedRoundTrip(t *testing.T) {
 	var mu sync.Mutex
 	var attemptsWithoutSystem []bool
 	var calls atomic.Int64
-	// handler 里要读「刚记录的请求体」：newUpstream 会先读 r.Body 再交给 handler，
-	// 所以这里从 u.last 取，而不是再读一次 r.Body（那样拿到的是空 body）。
+	// The handler needs to read "the just-recorded request body": newUpstream reads r.Body first and then hands it to the handler,
+	// so here it is taken from u.last instead of reading r.Body again (which would yield an empty body).
 	var u *upstream
 	u = newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/theos") {
@@ -88,7 +88,7 @@ func TestPresetDesktopShapeSkipsRejectedRoundTrip(t *testing.T) {
 
 	body := `{"model":"m","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 
-	// 第一次：学到「需要形状」，共 2 次上游调用（1 次被拒 + 1 次重试）。
+	// First time: learns "shape is needed", 2 upstream calls in total (1 rejected + 1 retry).
 	if rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, body); rec.Code != http.StatusOK {
 		t.Fatalf("第一次应 200，实际 %d: %s", rec.Code, rec.Body.String())
 	}
@@ -96,7 +96,7 @@ func TestPresetDesktopShapeSkipsRejectedRoundTrip(t *testing.T) {
 		t.Fatalf("第一次应有 2 次上游调用，实际 %d", calls.Load())
 	}
 
-	// 第二次：预置 system，只有 1 次上游调用，且带 system。
+	// Second time: system is preset, only 1 upstream call, and it includes system.
 	before := calls.Load()
 	if rec := do(t, s, http.MethodPost, "/v1/chat/completions", key, body); rec.Code != http.StatusOK {
 		t.Fatalf("第二次应 200，实际 %d: %s", rec.Code, rec.Body.String())
@@ -112,7 +112,7 @@ func TestPresetDesktopShapeSkipsRejectedRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPresetDesktopShapeDisabledByDefault：开关关闭时不预置，仍走学习路径。
+// TestPresetDesktopShapeDisabledByDefault: when the switch is off, nothing is preset and the learning path is still used.
 func TestPresetDesktopShapeDisabledByDefault(t *testing.T) {
 	var calls atomic.Int64
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {

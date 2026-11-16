@@ -1,20 +1,20 @@
 package server
 
-// 账号管理的 10 个 action 各自一个处理函数。
+// Each of the 10 account management actions has its own handler function.
 //
-// 改造前是一个 255 行的 switch，共享一个 30 字段的「万能请求体」：
-// `action=remove` 只需要 id，却和 `action=enroll` 共用同一个结构体，
-// 必填项与可选性完全看不出来。
+// Before the refactor, it was a 255-line switch sharing a 30-field "universal request body":
+// `action=remove` only needs id, yet shares the same struct with `action=enroll`,
+// making required fields and optionality completely invisible.
 //
-// 现在分两步解析：
-//  1. 先只解出 `action`（adminActionEnvelope）；
-//  2. 再按 action 解它自己的最小结构体。
+// Now it parses in two steps:
+// 1. First decode only `action` (adminActionEnvelope);
+// 2. Then decode its own minimal struct based on the action.
 //
-// 好处是每个 action 的入参在签名上就写清楚了，新增 action 只加一个函数
-// 和一行表项，不会让任何一个函数变长。
+// The benefit is that each action's input is clearly expressed in the signature; adding a new action only requires adding one function
+// and one table entry, without making any function longer.
 //
-// 行为差异（唯一的）：某个 action 的请求体里带了**别的** action 才用的
-// 非法字段时，以前会整体解码失败，现在忽略。这只会让接口更宽容。
+// The only behavioral difference: when an action's request body contains fields used only by **another** action,
+// that are illegal, it used to fail decoding entirely; now they are ignored. This only makes the interface more lenient.
 
 import (
 	"encoding/json"
@@ -26,18 +26,18 @@ import (
 	"deepaicode2api/internal/proxy"
 )
 
-// adminActionEnvelope 只承载 action 本身，用于第一次解析。
+// adminActionEnvelope carries only the action itself, used for the first parse.
 type adminActionEnvelope struct {
 	Action string `json:"action"`
 }
 
-// adminActionFunc 处理一个 action：自己写完整响应（含错误）。
+// adminActionFunc handles one action: it writes the complete response itself (including errors).
 type adminActionFunc func(s *Server, w http.ResponseWriter, raw []byte)
 
-// adminActions 是 action → 处理函数的表。
+// adminActions is the action → handler function table.
 //
-// 新增 action 时：加一个常量（admin_accounts.go）、加一个函数、加一行表项；
-// 别忘了给它自己的最小请求结构体。
+// When adding a new action: add a constant (admin_accounts.go), add a function, add a table entry;
+// don't forget its own minimal request struct.
 var adminActions = map[string]adminActionFunc{
 	actionImport:        (*Server).adminImport,
 	actionManual:        (*Server).adminManual,
@@ -51,7 +51,7 @@ var adminActions = map[string]adminActionFunc{
 	actionSetGroup:      (*Server).adminSetGroup,
 }
 
-// decodeAction 把原始请求体解成某个 action 自己的结构体。
+// decodeAction decodes the raw request body into an action's own struct.
 func decodeAction[T any](w http.ResponseWriter, raw []byte) (T, bool) {
 	var v T
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -62,7 +62,7 @@ func decodeAction[T any](w http.ResponseWriter, raw []byte) (T, bool) {
 	return v, true
 }
 
-// --- 各 action 的请求结构体（只含该 action 真正用到的字段）---
+// --- Request structs for each action (containing only the fields actually used by that action) ---
 
 type adminImportReq struct {
 	Dir string `json:"dir"`
@@ -74,7 +74,7 @@ type adminManualReq struct {
 	Group  string `json:"group"`
 }
 
-// adminEnrollReq 是入池请求：注册链路会带齐身份 + 指纹 + 预探测结果。
+// adminEnrollReq is the pool enrollment request: the registration flow provides the full identity + fingerprint + pre-probe results.
 type adminEnrollReq struct {
 	Email          string `json:"email"`
 	Password       string `json:"password"`
@@ -94,14 +94,14 @@ type adminEnrollReq struct {
 	SecCHUA        string `json:"sec_chua"`
 	Platform       string `json:"platform"`
 
-	// SkipProbe 让调用方跳过入池时的 /theos 探测：注册链路刚验活过并随请求
-	// 带上了 theos_balance / theos_granted，再探一次既慢（~2s）又会引入新失败点。
+	// SkipProbe lets the caller skip the /theos probe during pool enrollment: the registration flow just verified liveness and includes it with the request
+	// Including theos_balance / theos_granted makes another probe both slow (~2s) and introduces a new failure point.
 	SkipProbe    bool   `json:"skip_probe"`
 	TheosBalance string `json:"theos_balance"`
 	TheosGranted string `json:"theos_granted"`
 }
 
-// adminIDReq 是「按 id 操作单个账号」的公共形状。
+// adminIDReq is the common shape for "operating on a single account by id".
 type adminIDReq struct {
 	ID string `json:"id"`
 }
@@ -109,7 +109,7 @@ type adminIDReq struct {
 type adminAssignProxyReq struct {
 	ID    string `json:"id"`
 	Group string `json:"group"`
-	// Reassign 为 true 时覆盖已有代理；Clear 为 true 时清空（回滚用）。
+	// When Reassign is true, overwrite the existing proxy; when Clear is true, clear it (for rollback).
 	Reassign bool `json:"reassign"`
 	Clear    bool `json:"clear"`
 }
@@ -125,9 +125,9 @@ type adminSetGroupReq struct {
 	FromGroup string `json:"from_group"`
 }
 
-// --- action 实现 ---
+// --- action implementations ---
 
-// adminImport 导入本机桌面端凭据。
+// adminImport imports credentials from the local desktop client.
 func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminImportReq](w, raw)
 	if !ok {
@@ -152,7 +152,7 @@ func (s *Server) adminImport(w http.ResponseWriter, raw []byte) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(imported), "imported": imported})
 }
 
-// adminManual 用一把手工粘贴的 API Key 建账号。
+// adminManual creates an account from a manually pasted API Key.
 func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminManualReq](w, raw)
 	if !ok {
@@ -174,7 +174,7 @@ func (s *Server) adminManual(w http.ResponseWriter, raw []byte) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "new": isNew, "id": acct.ID})
 }
 
-// adminEnroll 把已验活的账号写入号池（唯一写入口）。
+// adminEnroll writes a verified-live account into the account pool (the only write entry point).
 func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminEnrollReq](w, raw)
 	if !ok {
@@ -190,7 +190,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 		SecCHUA: strings.TrimSpace(body.SecCHUA), Platform: strings.TrimSpace(body.Platform),
 		Source: "register",
 	}
-	// 每个账号必须有独立机器指纹；否则上游的每日免费额度会与其他账号互斥。
+	// Each account must have its own machine fingerprint; otherwise the upstream's daily free quota will be mutually exclusive with other accounts.
 	if reg.MachineID == "" {
 		reg.MachineID = deepai.NewMachineUUID()
 	}
@@ -200,7 +200,7 @@ func (s *Server) adminEnroll(w http.ResponseWriter, raw []byte) {
 		return
 	}
 
-	// 调用方已验活并带上结果时直接采信；否则自己探（控制台手工入池走这条）。
+	// If the caller has already verified liveness and passes the result, trust it directly; otherwise probe it yourself (manual console enrollment takes this path).
 	var al *deepai.Allowance
 	balance, granted := strings.TrimSpace(body.TheosBalance), strings.TrimSpace(body.TheosGranted)
 	if body.SkipProbe && balance != "" {
@@ -275,9 +275,9 @@ func (s *Server) adminClearErrors(w http.ResponseWriter, raw []byte) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// adminAssignMachine 为存量账号补一个独立机器指纹。
+// adminAssignMachine backfills an independent machine fingerprint for existing accounts.
 //
-// 只补空值，不覆盖已有指纹（覆盖会让该账号已被上游记住的额度归属失效）。
+// Only fill empty values, never overwrite an existing fingerprint (overwriting invalidates the quota attribution the upstream has already remembered for that account).
 func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminIDReq](w, raw)
 	if !ok {
@@ -298,13 +298,13 @@ func (s *Server) adminAssignMachine(w http.ResponseWriter, raw []byte) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	// 重新探测配额，让调度能立即看到新指纹下的额度。
-	// 走登记过的批量入口：进程关停时要等这次落盘跑完。
+	// Re-probe the quota so scheduling can immediately see the quota under the new fingerprint.
+	// Goes through the registered batch entry point: on process shutdown, wait for this persist-to-disk to finish.
 	s.probeBatchAsync(targets)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "assigned": assigned})
 }
 
-// adminClearProxy 是 assign-proxy 的 clear 分支：把匹配账号的代理置空（回滚用）。
+// adminClearProxy is the clear branch of assign-proxy: sets the proxy of matching accounts to empty (for rollback).
 func (s *Server) adminClearProxy(w http.ResponseWriter, match func(*deepai.Account) bool) {
 	cleared := s.Store.UpdateAccounts(func(a *deepai.Account) bool {
 		if !match(a) || strings.TrimSpace(a.Proxy) == "" {
@@ -319,9 +319,9 @@ func (s *Server) adminClearProxy(w http.ResponseWriter, match func(*deepai.Accou
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
-// adminAssignProxy 把注册代理池（PROXY_POOL / PROXY_POOL_FILE）轮询分配给号池账号。
+// adminAssignProxy assigns proxies from the registered proxy pool (PROXY_POOL / PROXY_POOL_FILE) to account pool accounts in rotation.
 //
-// 默认只补空值；reassign=true 覆盖，clear=true 清空（回滚）。
+// By default only fills empty values; reassign=true overwrites, clear=true clears (rollback).
 func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminAssignProxyReq](w, raw)
 	if !ok {
@@ -378,7 +378,7 @@ func (s *Server) adminAssignProxy(w http.ResponseWriter, raw []byte) {
 	})
 }
 
-// adminMarkVerified 由后台验证链路回填 email_verified（入池时可能还是 false）。
+// adminMarkVerified backfills email_verified from the background verification pipeline (it may still be false when entering the pool).
 func (s *Server) adminMarkVerified(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminMarkVerifiedReq](w, raw)
 	if !ok {
@@ -391,9 +391,9 @@ func (s *Server) adminMarkVerified(w http.ResponseWriter, raw []byte) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// adminSetGroup 把账号迁到另一个分组（例如把压测批次并入日常号池）。
+// adminSetGroup moves an account to another group (e.g. merging a stress-test batch into the daily account pool).
 //
-// id 为空时按 from_group 批量迁移，便于整批归位。
+// When id is empty, migrate in bulk by from_group, making it easy to move a whole batch back into place.
 func (s *Server) adminSetGroup(w http.ResponseWriter, raw []byte) {
 	body, ok := decodeAction[adminSetGroupReq](w, raw)
 	if !ok {

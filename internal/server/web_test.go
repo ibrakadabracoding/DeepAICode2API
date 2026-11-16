@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestConsoleAssetsServed 守住控制台的资源接线。
+// TestConsoleAssetsServed guards the console asset wiring.
 //
-// 控制台已拆成「标记 + 样式 + ES module」：`go:embed` 少列一条、路由漏注册，
-// 都会变成运行时 404（页面白屏但 go test 全绿）。这里逐个访问一遍。
+// The console has been split into "markup + styles + ES modules": one missing entry in `go:embed` or one unregistered route
+// turns into a runtime 404 (blank page while go test stays all green). Here we visit each one.
 func TestConsoleAssetsServed(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -46,8 +46,8 @@ func TestConsoleAssetsServed(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), c.contains) {
 			t.Errorf("GET %s 的内容里找不到 %q", c.path, c.contains)
 		}
-		// 页面不缓存（随二进制更新），静态资源用 ETag 重校验：
-		// no-store 会让首屏 17 个模块每次都全量重下。
+		// Pages are not cached (they update with the binary), static assets are revalidated with ETag:
+		// no-store would force all 17 modules to be fully re-downloaded on every first load.
 		cc := rec.Header().Get("Cache-Control")
 		if c.html {
 			if cc != "no-store" {
@@ -61,14 +61,14 @@ func TestConsoleAssetsServed(t *testing.T) {
 				t.Errorf("GET %s 缺少 ETag（无法 304 重校验）", c.path)
 			}
 		}
-		// 页面与脚本都承载管理会话，CSP 不能漏。
+		// Both the page and the scripts carry the admin session, so CSP must not be omitted.
 		if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 			t.Errorf("GET %s 缺少严格 CSP，实际 %q", c.path, csp)
 		}
 	}
 }
 
-// TestConsoleAssetConditionalGET 验证 ETag 能命中 304（升级后自然失效）。
+// TestConsoleAssetConditionalGET verifies that the ETag hits 304 (naturally invalidated after an upgrade).
 func TestConsoleAssetConditionalGET(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	first := do(t, s, http.MethodGet, "/js/app.js", key, "")
@@ -89,7 +89,7 @@ func TestConsoleAssetConditionalGET(t *testing.T) {
 		t.Fatalf("304 不应带响应体，实际 %d 字节", rec.Body.Len())
 	}
 
-	// 换了内容（升级二进制）就必须重新下发：这里用错误的 ETag 模拟。
+	// Changed content (upgraded binary) must be re-sent: here we simulate that with a wrong ETag.
 	req2 := httptest.NewRequest(http.MethodGet, "/js/app.js", nil)
 	req2.RemoteAddr = "127.0.0.1:34567"
 	req2.Header.Set("If-None-Match", `"stale"`)
@@ -100,9 +100,9 @@ func TestConsoleAssetConditionalGET(t *testing.T) {
 	}
 }
 
-// TestConsolePageHasNoInlineAssets 确认标记里不再内联样式与脚本。
+// TestConsolePageHasNoInlineAssets confirms that the markup no longer inlines styles and scripts.
 //
-// 内联回去会让 style.css / app.js 成为死文件，同时绕过资源路由的测试。
+// Inlining them back would make style.css / app.js dead files and bypass the asset route tests.
 func TestConsolePageHasNoInlineAssets(t *testing.T) {
 	page := consoleMarkup()
 	if strings.Contains(page, "<style>") {
@@ -119,10 +119,10 @@ func TestConsolePageHasNoInlineAssets(t *testing.T) {
 	}
 }
 
-// TestConsoleAssetPathIsWhitelisted 确认资源路由不接受任意路径。
+// TestConsoleAssetPathIsWhitelisted confirms that the asset route does not accept arbitrary paths.
 //
-// 注意 `/js/../../etc/passwd` 会被 net/http 的 ServeMux 先规整成 301 跳转，
-// 这同样是「不提供该文件」——断言的重点是「不含文件内容且不是 200」。
+// Note that `/js/../../etc/passwd` is first normalized by net/http's ServeMux into a 301 redirect,
+// which is likewise "the file is not served" - the assertion's point is "no file content and not 200".
 func TestConsoleAssetPathIsWhitelisted(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	for _, p := range []string{

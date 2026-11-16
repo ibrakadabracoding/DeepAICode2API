@@ -17,8 +17,8 @@ const okChatResponse = `{"id":"x","object":"chat.completion","choices":[{"index"
 	`"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],` +
 	`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
 
-// 302 → 401 + 账号标失败：坏 Key 不能永远占着调度（以前会原样透传 302，
-// 且账号一直保持 ok，每个请求都白撞一次）。
+// 302 → 401 + mark the account as failed: a bad key must not hold onto scheduling forever (previously the 302 was passed through as-is,
+// and the account stayed ok, so every request hit the same dead end).
 func TestRedirectedAccountMarkedAndSkipped(t *testing.T) {
 	var mu sync.Mutex
 	hits := map[string]int{}
@@ -35,7 +35,7 @@ func TestRedirectedAccountMarkedAndSkipped(t *testing.T) {
 		_, _ = io.WriteString(w, okChatResponse)
 	})
 	s, key := newTestServer(t, u)
-	// acc-1 是 newTestServer 预置的第一个账号，让它先被选中。
+	// acc-1 is the first account preloaded by newTestServer, so make it get selected first.
 	s.Store.UpdateAccount("acc-1", func(a *deepai.Account) { a.APIKey = "bad-key" })
 	s.Store.UpsertAccount(&deepai.Account{
 		ID: "acc-good", Name: "good", APIKey: "good-key", Enabled: true, Status: "ok",
@@ -53,7 +53,7 @@ func TestRedirectedAccountMarkedAndSkipped(t *testing.T) {
 		t.Fatalf("失败原因应写明重定向，实际 %q", bad.LastErr)
 	}
 
-	// 再来一次：坏号已被降权，不应再被优先选中，但即便选中也不会把 302 透给客户端。
+	// Try again: the bad account has already been deprioritized, so it should no longer be selected first, but even if it is selected, the 302 must not be passed through to the client.
 	before := hits["bad-key"]
 	rec = do(t, s, http.MethodPost, "/v1/chat/completions", key, chatProbeBody)
 	if rec.Code != http.StatusOK {
@@ -64,7 +64,7 @@ func TestRedirectedAccountMarkedAndSkipped(t *testing.T) {
 	}
 }
 
-// 全池都是 302 时，客户端应拿到可识别的 401，而不是裸 302。
+// When the whole pool returns 302, the client should get a recognizable 401 instead of a bare 302.
 func TestRedirectedAllAccountsReturnAuthError(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://deepai.org/login", http.StatusFound)
@@ -80,7 +80,7 @@ func TestRedirectedAllAccountsReturnAuthError(t *testing.T) {
 	}
 }
 
-// email_unverified 标记登录失效并跳过：换号也救不了它，别反复撞。
+// email_unverified marks the login as invalid and skips it: switching accounts cannot save it, so do not keep hitting it repeatedly.
 func TestEmailUnverifiedBlocksAndSkips(t *testing.T) {
 	var mu sync.Mutex
 	hits := 0
@@ -119,8 +119,8 @@ func TestEmailUnverifiedBlocksAndSkips(t *testing.T) {
 	}
 }
 
-// 409 session_busy：池里还有空号时应立刻换号，不能先 sleep(Retry-After)。
-// 以前一律等待再换号，最坏白等 30s（docs/performance.md §14 的并发问题之一）。
+// 409 session_busy: when there are still idle accounts in the pool, switch accounts immediately; do not sleep(Retry-After) first.
+// Previously it always waited before switching accounts, wasting up to 30s in the worst case (one of the concurrency issues in docs/performance.md §14).
 func TestSessionBusySwitchesImmediatelyWhenAnotherAccountIsFree(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]int{}
@@ -130,7 +130,7 @@ func TestSessionBusySwitchesImmediatelyWhenAnotherAccountIsFree(t *testing.T) {
 		seen[key]++
 		mu.Unlock()
 		if key == "busy-key" {
-			w.Header().Set("Retry-After", "30") // 真等就是 30s
+			w.Header().Set("Retry-After", "30") // Actually waiting really is 30s
 			w.WriteHeader(http.StatusConflict)
 			_, _ = io.WriteString(w, `{"error":{"code":"session_busy","message":"busy"}}`)
 			return

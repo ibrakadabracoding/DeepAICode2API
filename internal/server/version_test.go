@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TestParseSemver 覆盖解析边界：v 前缀、预发布后缀、非规范值。
+// TestParseSemver covers parsing edge cases: v prefix, prerelease suffix, non-canonical values.
 func TestParseSemver(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -25,8 +25,8 @@ func TestParseSemver(t *testing.T) {
 		{"v1.2.3+build.7", [3]int{1, 2, 3}, true},
 		{"dev", [3]int{}, false},
 		{"docker", [3]int{}, false},
-		// git describe 形态（v0.1.0-3-gabc123）按基础 tag 解析：
-		// 3 个提交之后的构建仍然属于 v0.1.0，拿它比对 release 是合理的。
+		// git describe form (v0.1.0-3-gabc123) is parsed by base tag:
+		// A build 3 commits later still belongs to v0.1.0; comparing it against release is reasonable.
 		{"v0.1.0-3-gabc123", [3]int{0, 1, 0}, true},
 		{"v1.2.3.4", [3]int{}, false},
 		{"", [3]int{}, false},
@@ -39,7 +39,7 @@ func TestParseSemver(t *testing.T) {
 	}
 }
 
-// TestVersionNewer 守住「不误报升级」：解析不出数字时一律不回 true。
+// TestVersionNewer guards against false upgrade reports: never return true when no number can be parsed.
 func TestVersionNewer(t *testing.T) {
 	cases := []struct {
 		latest, current string
@@ -51,7 +51,7 @@ func TestVersionNewer(t *testing.T) {
 		{"v0.1.0", "v0.2.0", false},
 		{"v1.0.0", "dev", false},
 		{"dev", "v0.1.0", false},
-		// 同日构建的 rc 后缀不影响判定。
+		// The rc suffix on same-day builds does not affect the decision.
 		{"v0.2.0-rc1", "v0.1.0", true},
 	}
 	for _, c := range cases {
@@ -61,7 +61,7 @@ func TestVersionNewer(t *testing.T) {
 	}
 }
 
-// withUpdateFeed 把更新源指向一个测试服务器，返回请求计数器。
+// withUpdateFeed points the update source at a test server and returns a request counter.
 func withUpdateFeed(t *testing.T, handler http.HandlerFunc) *atomic.Int64 {
 	t.Helper()
 	var hits atomic.Int64
@@ -77,7 +77,7 @@ func withUpdateFeed(t *testing.T, handler http.HandlerFunc) *atomic.Int64 {
 	return &hits
 }
 
-// TestAdminVersionEndpoint 验证「有新版本」的完整链路与缓存。
+// TestAdminVersionEndpoint verifies the full flow and caching for 'new version available'.
 func TestAdminVersionEndpoint(t *testing.T) {
 	hits := withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
 		if ua := r.Header.Get("User-Agent"); ua == "" {
@@ -112,19 +112,19 @@ func TestAdminVersionEndpoint(t *testing.T) {
 		t.Fatalf("应带 release_url：%v", out)
 	}
 
-	// 第二次必须命中缓存：GitHub 未认证请求有速率限制。
+	// The second call must hit the cache: unauthenticated GitHub requests are rate-limited.
 	_ = do(t, s, http.MethodGet, "/admin/api/version", "", "")
 	if n := hits.Load(); n != 1 {
 		t.Fatalf("应只查一次上游（缓存 6h），实际 %d 次", n)
 	}
 }
 
-// TestAdminVersionDevBuild 验证开发构建不做比对（否则永远提示「有新版本」）。
+// TestAdminVersionDevBuild verifies dev builds skip comparison (otherwise it would always report 'new version available').
 func TestAdminVersionDevBuild(t *testing.T) {
 	hits := withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("dev 构建不应请求更新源")
 	})
-	s, _ := newTestServer(t, nil) // 未 SetVersion → dev
+	s, _ := newTestServer(t, nil) // SetVersion not called → dev
 	rec := do(t, s, http.MethodGet, "/admin/api/version", "", "")
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
 	if out["update_available"] != false {
@@ -138,7 +138,7 @@ func TestAdminVersionDevBuild(t *testing.T) {
 	}
 }
 
-// TestAdminVersionUpstreamFailure 验证上游失败时仍返回 200 + 当前版本。
+// TestAdminVersionUpstreamFailure verifies that upstream failure still returns 200 + current version.
 func TestAdminVersionUpstreamFailure(t *testing.T) {
 	withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -158,13 +158,13 @@ func TestAdminVersionUpstreamFailure(t *testing.T) {
 		t.Fatalf("应带 error 字段说明查询失败：%v", out)
 	}
 
-	// 方法不对时 405。
+	// 405 when method is wrong.
 	if rec := do(t, s, http.MethodPost, "/admin/api/version", "", ""); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST 应回 405，实际 %d", rec.Code)
 	}
 }
 
-// TestHealthIncludesVersion 验证控制台能从公开端点拿到版本号。
+// TestHealthIncludesVersion verifies the console can get the version number from a public endpoint.
 func TestHealthIncludesVersion(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.SetVersion("v0.1.0")
@@ -175,13 +175,13 @@ func TestHealthIncludesVersion(t *testing.T) {
 	}
 }
 
-// TestVersionStatusSingleFlight 覆盖「缓存冷时并发查询合并」。
+// TestVersionStatusSingleFlight covers 'merging concurrent queries when the cache is cold'.
 //
-// 控制台可能在多个标签页同时刷新；没有合并时每个请求都会打一次 GitHub，
-// 而未认证的 GitHub API 有速率限制。这里只允许上游被命中一次。
+// The console may refresh in multiple tabs at once; without merging, every request hits GitHub,
+// and the unauthenticated GitHub API is rate-limited. Here the upstream is allowed to be hit only once.
 func TestVersionStatusSingleFlight(t *testing.T) {
 	var hits atomic.Int64
-	gate := make(chan struct{}) // 8 个调用真正重叠的闸门：都发起后再放行
+	gate := make(chan struct{}) // Gate for 8 calls to truly overlap: release only after all have been initiated
 	withUpdateFeed(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		<-gate
@@ -195,9 +195,9 @@ func TestVersionStatusSingleFlight(t *testing.T) {
 	s.SetVersion("v0.1.0")
 
 	const n = 8
-	// 结果走 channel 而不是 results[i]：并发写同一个切片的不同下标虽然安全，
-	// 但静态规则（go-shared-map-write-goroutine）看不出这是「各写各的」，
-	// 每次扫描都要人工确认一遍。channel 让「谁产生、谁消费」写在类型上。
+	// Results go through a channel instead of results[i]: writing different indices of the same slice concurrently is safe,
+	// but the static rule (go-shared-map-write-goroutine) cannot see that this is 'each writing its own',
+	// so every scan requires manual confirmation. A channel encodes 'who produces, who consumes' in the type.
 	results := make(chan versionInfo, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
@@ -207,7 +207,7 @@ func TestVersionStatusSingleFlight(t *testing.T) {
 			results <- s.versionStatus(t.Context())
 		}()
 	}
-	close(gate) // 放行：此时 8 个 goroutine 都已在单飞队列里
+	close(gate) // Release: at this point all 8 goroutines are already in the singleflight queue
 	wg.Wait()
 	close(results)
 
@@ -226,14 +226,14 @@ func TestVersionStatusSingleFlight(t *testing.T) {
 	}
 }
 
-// TestVersionStatusSurvivesCallerCancel 守住「第一个调用方断开」的缓存污染。
+// TestVersionStatusSurvivesCallerCancel guards against cache pollution when the first caller disconnects.
 //
-// 以前单飞的 leader 直接用调用方的 ctx：控制台刚打开就关掉标签页 → 在途的
-// GitHub 查询被 abort → 失败结果写进缓存 6 小时 → 之后所有人打开控制台都是
-// 「无法检查更新」，而 GitHub 其实完全可达。
+// Previously the singleflight leader used the caller's ctx directly: the console is opened and the tab is closed right away → the in-flight
+// GitHub query gets aborted → the failure result is written to the cache for 6 hours → afterwards everyone opening the console sees
+// "Unable to check for updates", even though GitHub is actually fully reachable.
 func TestVersionStatusSurvivesCallerCancel(t *testing.T) {
-	// arrived 在上游真的收到请求时关闭；release 由测试在 cancel 之后关闭。
-	// 用 channel 而不是 sleep：没有随机等待，也不受机器快慢影响。
+	// arrived is closed when the upstream actually receives the request; release is closed by the test after cancel.
+	// Use channels instead of sleep: no random waiting, and unaffected by machine speed.
 	arrived := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -254,15 +254,15 @@ func TestVersionStatusSurvivesCallerCancel(t *testing.T) {
 	go func() { done <- s.versionStatus(ctx) }()
 
 	select {
-	case <-arrived: // leader 的查询已经在上游路上
+	case <-arrived: // the leader's query is already on its way to the upstream
 	case <-time.After(5 * time.Second):
 		t.Fatal("上游始终没收到请求")
 	}
-	cancel()       // 此刻调用方断开（浏览器关掉标签页）
-	close(release) // 放上游返回
+	cancel()       // at this moment the caller disconnects (browser closes the tab)
+	close(release) // let the upstream return
 	leader := <-done
 
-	// 关键断言：取消发生在查询途中，leader 仍应拿到结果，而不是把取消当失败缓存。
+	// Key assertion: the cancel happens mid-query, and the leader should still get the result rather than caching the cancellation as a failure.
 	if leader.Error != "" {
 		t.Fatalf("调用方取消不应污染结果：%+v", leader)
 	}

@@ -10,7 +10,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// fixtureModels 是一份覆盖各种形态的目录：免费 / 付费 / 按秒计费 / responses 端点。
+// fixtureModels is a catalog covering various shapes: free / paid / per-second billing / responses endpoint.
 func fixtureModels() []deepai.Model {
 	return []deepai.Model{
 		{
@@ -31,10 +31,10 @@ func fixtureModels() []deepai.Model {
 	}
 }
 
-// TestPublicModelsExposeDeepAIMeta 钉住 /v1/models 的 deepai 元信息字段。
+// TestPublicModelsExposeDeepAIMeta pins the deepai metadata fields of /v1/models.
 //
-// 客户端（含控制台之外的脚本）靠它判断上下文窗口与计费；少一个字段不会报错，
-// 只会静默变成 undefined。
+// Clients (including scripts outside the console) rely on it to determine context window and billing;
+// a missing field doesn't error, it just silently becomes undefined.
 func TestPublicModelsExposeDeepAIMeta(t *testing.T) {
 	s, key := newTestServer(t, nil)
 	s.Store.SetModels(fixtureModels(), "free-chat")
@@ -74,7 +74,7 @@ func TestPublicModelsExposeDeepAIMeta(t *testing.T) {
 		}
 	}
 
-	// free 必须与 Model.Free() 同源：付费模型即使便宜也不能标免费。
+	// free must share its source with Model.Free(): a paid model must not be marked free even if it is cheap.
 	byID := map[string]map[string]any{}
 	for _, m := range payload.Data {
 		byID[m.ID] = m.Deep
@@ -91,10 +91,11 @@ func TestPublicModelsExposeDeepAIMeta(t *testing.T) {
 	}
 }
 
-// TestAdminModelsExposeFreeAndPerSecond 钉住控制台模型列表的字段。
+// TestAdminModelsExposeFreeAndPerSecond pins the fields of the console model list.
 //
-// 控制台的「计费」列直接读后端下发的 free（不再自己算口径），
-// 「每秒计费」列读 theosPerSecond；两者缺一个，列就会静默空白。
+// The console's "billing" column reads the backend-provided free directly (it no longer computes the
+// criteria itself), and the "per-second billing" column reads theosPerSecond; missing either leaves
+// the column silently blank.
 func TestAdminModelsExposeFreeAndPerSecond(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 	s.Store.SetModels(fixtureModels(), "free-chat")
@@ -141,8 +142,9 @@ func TestAdminModelsExposeFreeAndPerSecond(t *testing.T) {
 	}
 }
 
-// TestAdminModelsFallbackWhenCatalogEmpty 确认新装且上游不可达时，
-// 控制台与 /v1/models 都回落到同一个兜底模型（曾出现一边空一边有）。
+// TestAdminModelsFallbackWhenCatalogEmpty confirms that on a fresh install with an unreachable
+// upstream, both the console and /v1/models fall back to the same fallback model (there was once a
+// case where one was empty while the other was not).
 func TestAdminModelsFallbackWhenCatalogEmpty(t *testing.T) {
 	s, key := newTestServer(t, nil)
 
@@ -173,8 +175,9 @@ func TestAdminModelsFallbackWhenCatalogEmpty(t *testing.T) {
 	}
 }
 
-// 2026-11-14 起上游 /models 要求 Api-Key：目录刷新必须借一个账号的凭据，
-// 号池空时要给出可行动的错误，而不是把上游 401 原样抛给控制台。
+// Since 2026-11-14 the upstream /models requires an Api-Key: catalog refresh must borrow an account's
+// credentials, and when the account pool is empty it must give an actionable error instead of passing
+// the upstream 401 straight to the console.
 func TestRefreshModelsNeedsAccount(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
@@ -195,7 +198,7 @@ func TestRefreshModelsNeedsAccount(t *testing.T) {
 	}
 }
 
-// 有账号时必须带上它的 Key（否则目录拉取必然 401）。
+// With an account available, its key must be included (otherwise the catalog fetch is guaranteed to 401).
 func TestRefreshModelsSendsAccountKey(t *testing.T) {
 	u := newWarmupUpstream(t)
 	s, _ := newTestServer(t, u)
@@ -212,9 +215,10 @@ func TestRefreshModelsSendsAccountKey(t *testing.T) {
 	}
 }
 
-// probeAccount 优先「就绪 + 带机器指纹」的号；没有就退到任一有 Key 的启用号。
+// probeAccount prefers an "ok + has machine fingerprint" account; otherwise it falls back to any
+// enabled account with a key.
 func TestProbeAccountPrefersReadyWithMachine(t *testing.T) {
-	s, _ := newTestServer(t, nil) // acc-1：ok，但没机器指纹
+	s, _ := newTestServer(t, nil) // acc-1: ok, but no machine fingerprint
 	s.Store.UpsertAccount(&deepai.Account{
 		ID: "with-machine", Name: "wm", APIKey: "k-wm", Enabled: true, Status: "ok",
 		MachineID: "11111111-1111-1111-1111-111111111111",

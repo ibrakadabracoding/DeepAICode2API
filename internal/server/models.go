@@ -9,8 +9,8 @@ import (
 	"deepaicode2api/internal/registry"
 )
 
-// catalog 返回当前模型目录；目录为空时回落到内置兜底模型，
-// 便于首次启动（尚未拉到上游目录）时仍能应答。
+// catalog returns the current model catalog; when the catalog is empty it falls back to the built-in fallback models,
+// so that the first startup (before the upstream catalog has been fetched) can still respond.
 func (s *Server) catalog() []deepai.Model {
 	catalog := s.Store.Models()
 	if len(catalog) == 0 {
@@ -19,11 +19,11 @@ func (s *Server) catalog() []deepai.Model {
 	return catalog
 }
 
-// probeAccount 返回一个可以用于「目录 / 车道探测」的账号。
+// probeAccount returns an account that can be used for "catalog / lane probing".
 //
-// 上游 2026-11-14 起对 `/models` 也要求 Api-Key（不带一律 401 auth_required），
-// 而这两个探测都不消耗 Theos、也与账号身份无关，所以借任意一个号的 Key 即可。
-// 挑号顺序：就绪且带机器指纹的 → 任一启用且有 Key 的 → nil（没有凭据）。
+// Since 2026-11-14 the upstream also requires an Api-Key for `/models` (without one it always returns 401 auth_required),
+// and neither of these probes consumes Theos or depends on account identity, so the Key of any account will do.
+// Account selection order: ready with machine fingerprint → any enabled account with a Key → nil (no credentials).
 func (s *Server) probeAccount() *deepai.Account {
 	var fallback *deepai.Account
 	now := time.Now()
@@ -41,20 +41,20 @@ func (s *Server) probeAccount() *deepai.Account {
 	return fallback
 }
 
-// resolveModel 用当前目录 + 别名解析请求模型（宽松：解析不到时回落，永不失败）。
+// resolveModel resolves the requested model using the current catalog + aliases (lenient: falls back when unresolvable, never fails).
 func (s *Server) resolveModel(name string) deepai.Model {
 	m, _ := s.resolveModelOK(name)
 	return m
 }
 
-// resolveModelOK 解析模型名，并报告它是否“有依据”地命中目录。
+// resolveModelOK resolves the model name and reports whether it hit the catalog with justification.
 //
-// 顺序：精确 ID → 自定义别名 → 内置别名 → 模型名称 → （非严格模式）子串
-// → 默认模型 / 目录首项。ok=false 只会在严格模式下出现。
+// Order: exact ID → custom alias → built-in alias → model name → (non-strict mode) substring
+// → default model / first catalog entry. ok=false only occurs in strict mode.
 //
-// 严格模式（Settings.StrictModel）的存在意义：宽松回落会把拼写错误
-// 静默换成一个完全不同的模型（例如 gpt-6-sol → glm-5.3-flash），
-// 调用方会以为自己测的是 A，实际跑的是 B。
+// The point of strict mode (Settings.StrictModel): lenient fallback silently swaps a typo
+// for a completely different model (e.g. gpt-6-sol → glm-5.3-flash),
+// so the caller thinks they are testing A while actually running B.
 func (s *Server) resolveModelOK(name string) (deepai.Model, bool) {
 	catalog := s.catalog()
 	settings := s.Store.Settings()
@@ -68,10 +68,10 @@ func (s *Server) resolveModelOK(name string) (deepai.Model, bool) {
 	return registry.Resolve(catalog, settings.ModelAliases, name, def), true
 }
 
-// defaultModelID 返回回落目标：设置里的兜底模型优先，否则目录默认。
+// defaultModelID returns the fallback target: the fallback model from settings takes priority, otherwise the catalog default.
 //
-// 目录默认空串时会再退一步取目录首项：否则「默认模型」会显示为空，
-// 而实际推理已经回落到目录首项（registry.Resolve 的第 37 行），两者不一致。
+// When the catalog default is an empty string it steps down further to the first catalog entry: otherwise the "default model" would display as empty,
+// while inference has actually fallen back to the first catalog entry (line 37 of registry.Resolve), leaving the two inconsistent.
 func (s *Server) defaultModelID() string {
 	catalog := s.catalog()
 	settings := s.Store.Settings()
@@ -88,10 +88,10 @@ func (s *Server) defaultModelID() string {
 	return settings.FallbackModel
 }
 
-// unknownModelMessage 生成严格模式下的可执行错误信息。
+// unknownModelMessage generates an actionable error message for strict mode.
 //
-// 只靠一句“模型不存在”会让调用方无从下手；带上近似候选（gpt-6-sol 附近
-// 就是 gpt-6.1-sol）才能一眼看出是拼写还是渠道不支持。
+// A bare "model does not exist" leaves the caller with nowhere to go; including near candidates (around gpt-6-sol
+// that is gpt-6.1-sol) makes it obvious at a glance whether it is a typo or an unsupported channel.
 func (s *Server) unknownModelMessage(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -105,12 +105,12 @@ func (s *Server) unknownModelMessage(name string) string {
 	return msg
 }
 
-// adminModelViews 把目录条目转成控制台下发的视图。
+// adminModelViews converts catalog entries into the views delivered by the console.
 //
-// 比裸 deepai.Model 只多两件事：
-//   - 补 free：与 Model.Free() **同源**。前端自己算一套口径，
-//     一旦两边判断不一致，控制台就会说免费而实际计费（或反之）；
-//   - 显式带出 theosPerSecond：它的 JSON tag 是 omitempty，为空时前端拿不到键。
+// It only adds two things over a bare deepai.Model:
+// - Fill in free: **same source** as Model.Free(). The frontend computes its own set of criteria,
+// If the two sides disagree, the console will say free while it is actually billed (or vice versa);
+// - Explicitly expose theosPerSecond: its JSON tag is omitempty, so when empty the frontend cannot get the key.
 func adminModelViews(models []deepai.Model) []map[string]any {
 	out := make([]map[string]any, 0, len(models))
 	for _, m := range models {

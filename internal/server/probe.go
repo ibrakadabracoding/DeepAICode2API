@@ -13,48 +13,48 @@ import (
 	"deepaicode2api/internal/retry"
 )
 
-// --- 账号配额探测 ---
+// --- Account quota probing ---
 
 const (
-	// probeWorkers 是探测批量账号的并发上限。
+	// probeWorkers is the concurrency limit for probing accounts in bulk.
 	//
-	// 串行探测 20 个账号最坏要 10 分钟（每个 30s 超时），全并发又容易
-	// 把探针本身变成上游风控特征，4 是实测下来兼顾速度与克制的值。
+	// Probing 20 accounts serially takes up to 10 minutes in the worst case (30s timeout each), while full concurrency easily
+	// turns the probe itself into an upstream risk-control signal; 4 is the empirically measured value that balances speed and restraint.
 	probeWorkers = 4
 
-	// quotaStaleAfter 是「按需复探」的触发阈值：使用中的账号额度信息
-	// 超过这个时间就异步刷新一次。与调度侧的 pool.QuotaStaleAfter 对齐 ——
-	// 调度在同一阈值之后不再信任 balance=0，两边判断必须一致。
+	// quotaStaleAfter is the trigger threshold for "on-demand re-probing": for accounts in use, quota information
+	// older than this is refreshed asynchronously. Aligned with pool.QuotaStaleAfter on the scheduling side -
+	// the scheduler stops trusting balance=0 after the same threshold, so both sides must make consistent judgments.
 	quotaStaleAfter = pool.QuotaStaleAfter
 
-	// QuotaGuardInterval / QuotaGuardBatch 是后台额度守护的节奏。
+	// QuotaGuardInterval / QuotaGuardBatch define the cadence of the background quota guard.
 	//
-	// 只挑「refresh_at 已过 / 从未探测 / 超过 6 小时未探」的账号，稳态下
-	// 几乎不产生请求；每天额度刷新那一刻会有整池集中到期，按 24 个 / 5 分钟
-	// 排队消化（653 号约 2.3 小时铺完）。不搞全量并发扫描 —— 那是明显的
-	// 风控特征，也会把探针变成流量。
+	// Only accounts whose refresh_at has passed / have never been probed / have not been probed for over 6 hours are selected; in steady state
+	// almost no requests are generated; at the daily quota refresh moment, the entire pool expires at once, processed in batches of 24 per 5 minutes
+	// in a queue (about 2.3 hours to cover 653 accounts). No full concurrent scan - that is an obvious
+	// risk-control signal and would also turn the probe into traffic.
 	QuotaGuardInterval = 5 * time.Minute
 	QuotaGuardBatch    = 24
 
-	// quotaGuardStaleAfter 是后台守护的「过旧」阈值。
-	// 比按需复探宽得多：活跃账号由推理路径顺带刷新，后台只负责兜底。
+	// quotaGuardStaleAfter is the "too old" threshold for the background guard.
+	// It is much looser than on-demand re-probing: active accounts are refreshed incidentally by the inference path, and the background only handles fallback.
 	quotaGuardStaleAfter = 6 * time.Hour
 
-	// maxCheckinBatch 是单次 /admin/api/checkin 最多探测的账号数。
+	// maxCheckinBatch is the maximum number of accounts probed in a single /admin/api/checkin call.
 	//
-	// 653 号全量串起来要 11 分钟，超过浏览器 / 反代的耐心；改为分批 +
-	// remaining，控制台按 remaining 继续下一批（每批探测过的 checked_at
-	// 会推到现在，下一批自然取到没探过的）。
+	// Chaining all 653 accounts takes 11 minutes, exceeding the patience of browsers / reverse proxies; so it is changed to batching +
+	// remaining, and the console continues to the next batch based on remaining (checked_at of accounts probed in each batch
+	// is pushed to now, so the next batch naturally picks up accounts that have not been probed).
 	maxCheckinBatch = 200
 )
 
-// probeRetryDelays 是入池前探测配额的退避序列。
+// probeRetryDelays is the backoff sequence for probing quota before entering the pool.
 //
-// 入池是唯一会阻塞调用方的探测点，而 /theos 的失败几乎都是出口抖动
-// （No exit node / TLS handshake / unexpected EOF），重试一次能救回绝大多数。
+// Pool entry is the only probing point that blocks the caller, and /theos failures are almost all egress jitter
+// (No exit node / TLS handshake / unexpected EOF), one retry can recover the vast majority.
 var probeRetryDelays = []time.Duration{time.Second}
 
-// quotaRefreshAt 解析上游返回的 refresh_at；无法解析时返回零值。
+// quotaRefreshAt parses refresh_at returned by the upstream; returns zero value when parsing fails.
 func quotaRefreshAt(a *deepai.Account) time.Time {
 	if a == nil || a.Theos == nil {
 		return time.Time{}
@@ -66,23 +66,23 @@ func quotaRefreshAt(a *deepai.Account) time.Time {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t
 	}
-	// 容忍不带时区的变体，按 UTC 处理（上游目前都是 RFC3339）。
+	// Tolerates variants without a timezone, treating them as UTC (the upstream currently always uses RFC3339).
 	if t, err := time.Parse("2006-01-02T15:04:05", raw); err == nil {
 		return t
 	}
 	return time.Time{}
 }
 
-// quotaNeedsRefresh 报告账号的额度信息是否已经不可信。
+// quotaNeedsRefresh reports whether the account's quota information is no longer trustworthy.
 //
-// staleAfter<=0 表示严格模式：只认「从未探测」与「refresh_at 已过」，
-// 用于手动 checkin 的 stale_only 过滤（不想把刚探过的号再打一遍）。
+// staleAfter<=0 means strict mode: only recognizes "never probed" and "refresh_at has passed",
+// Used for the stale_only filter in manual checkin (to avoid probing accounts that were just probed again).
 func quotaNeedsRefresh(a *deepai.Account, now time.Time, staleAfter time.Duration) bool {
 	if a == nil || !a.Enabled {
 		return false
 	}
-	// 探测失败后的冷却：失败往往是成片的（出口故障 / 上游抖动），
-	// 不缓存失败结果就会让后台守护每 5 分钟把同一批失败号全部重探一遍。
+	// Cooldown after a probe failure: failures often come in batches (exit node failure / upstream flakiness),
+	// Without caching failed results, the background daemon would re-probe the entire same batch of failed accounts every 5 minutes.
 	if a.ProbeAfter > now.Unix() {
 		return false
 	}
@@ -98,8 +98,8 @@ func quotaNeedsRefresh(a *deepai.Account, now time.Time, staleAfter time.Duratio
 	return false
 }
 
-// quotaDueRank 给出探测优先级：0 = refresh_at 已过（额度刚刷新，最该探），
-// 1 = 从未探测，2 = 单纯过旧。
+// quotaDueRank gives the probe priority: 0 = refresh_at has passed (quota was just refreshed, highest priority to probe),
+// 1 = never probed, 2 = simply too old.
 func quotaDueRank(a *deepai.Account, now time.Time) int {
 	if rt := quotaRefreshAt(a); !rt.IsZero() && !now.Before(rt) {
 		return 0
@@ -110,10 +110,10 @@ func quotaDueRank(a *deepai.Account, now time.Time) int {
 	return 2
 }
 
-// sortByQuotaDue 把最值得探测的账号排在前面（同级按 checked_at 升序）。
+// sortByQuotaDue puts the accounts most worth probing first (within the same rank, sorted by checked_at ascending).
 //
-// 分批探测依赖这个顺序：只探前 N 个时，先探「额度刚刷新」和「从没探过」的，
-// 才不会把配额花在已经最新的号上。
+// Batched probing relies on this order: when probing only the first N, probe those with "quota just refreshed" and "never probed" first,
+// so that quota is not spent on accounts that are already the most up to date.
 func sortByQuotaDue(accts []*deepai.Account, now time.Time) {
 	sort.SliceStable(accts, func(i, j int) bool {
 		ri, rj := quotaDueRank(accts[i], now), quotaDueRank(accts[j], now)
@@ -131,9 +131,9 @@ func checkedAt(a *deepai.Account) int64 {
 	return a.Theos.CheckedAt
 }
 
-// probeCooldownLeft 返回账号剩余的探测冷却（无冷却 / 已到期时为 0）。
+// probeCooldownLeft returns the account's remaining probe cooldown (0 when there is no cooldown / it has expired).
 //
-// 只用于日志：把「%s 后再试」说清楚，运维不用自己去翻 ProbeAfter。
+// Only used for logging: to make "retry after %s" clear, so operators do not have to look up ProbeAfter themselves.
 func probeCooldownLeft(a *deepai.Account) time.Duration {
 	if a == nil || a.ProbeAfter <= 0 {
 		return 0
@@ -142,14 +142,14 @@ func probeCooldownLeft(a *deepai.Account) time.Duration {
 	if left <= 0 {
 		return 0
 	}
-	// 日志里不需要秒级精度，抹掉零头更好读。
+	// Logs do not need second-level precision; trimming the remainder makes them easier to read.
 	return left.Round(time.Second)
 }
 
-// claimProbe 占用某账号的探测槽位；已有探测在跑时返回 false。
+// claimProbe claims the probe slot for an account; returns false when a probe is already running.
 //
-// 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、推理时的
-// 按需复探。没有去重时它们会互相叠加，把同一个号连打三次。
+// Three paths may probe the same batch of accounts at the same time: manual checkin, delayed re-probe after entering the pool, and during inference
+// on-demand re-probe. Without deduplication, they overlap and probe the same account three times in a row.
 func (s *Server) claimProbe(id string) bool {
 	if strings.TrimSpace(id) == "" {
 		return false
@@ -172,20 +172,20 @@ func (s *Server) releaseProbe(id string) {
 	s.probeMu.Unlock()
 }
 
-// probeOutcome 是单个账号的探测结果。
+// probeOutcome is the probe result for a single account.
 type probeOutcome struct {
 	Account   *deepai.Account
 	Allowance *deepai.Allowance
 	Err       error
-	// Skipped 表示该账号已有探测在跑，本次没有真正请求上游。
+	// Skipped means a probe is already running for this account; this round did not actually request the upstream.
 	Skipped bool
 }
 
-// probeBatch 以有界并发探测一批账号，结果按下标与入参一一对应。
+// probeBatch probes a batch of accounts with bounded concurrency; results correspond one-to-one with the input by index.
 //
-// strict=true 时失败会记入账号状态（手动探测：用户想知道哪个号不可用）；
-// strict=false 时只采信成功结果（自动复探：上游抖一下不应该把正在服务
-// 推理的账号标成 error，更不能累加 Failures 把调度带偏）。
+// When strict=true, failures are recorded into the account state (manual probe: the user wants to know which account is unusable);
+// When strict=false, only successful results are trusted (automatic re-probe: a brief upstream hiccup should not mark an account that is currently serving
+// inference as error, let alone accumulate Failures and skew scheduling).
 func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeout time.Duration, strict bool) []probeOutcome {
 	out := make([]probeOutcome, len(accts))
 	indexes := make([]int, 0, len(accts))
@@ -214,7 +214,7 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 		a := accts[i]
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		// 全局在途上限：手动批次、后台守护、按需复探共享 4 个槽位。
+		// Global in-flight limit: manual batches, background daemon, and on-demand re-probes share 4 slots.
 		select {
 		case s.probeSem <- struct{}{}:
 			defer func() { <-s.probeSem }()
@@ -224,18 +224,18 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 		al, err := s.clientFor(a).Theos(cctx, a)
 		out[i].Allowance, out[i].Err = al, err
 		if err != nil && !strict {
-			// 自动批次同样要留退避（这里返回后不落任何状态，否则下一次
-			// quotaNeedsRefresh 立刻又把这个号挑出来重探）。
+			// Automatic batches must also leave backoff (nothing is persisted after returning here, otherwise the next
+			// quotaNeedsRefresh will immediately pick this account out again for re-probe).
 			s.Store.RecordProbeFailure(a.ID)
 			return
 		}
-		// 策略拦截不是“额度探测失败”：单独落 blocked，调度器会跳过它。
+		// A policy block is not a "quota probe failure": persist it separately as blocked, and the scheduler will skip it.
 		if deepai.IsSocialLoginRequired(err) {
 			s.Store.BlockAccount(a.ID, err.Error())
 			return
 		}
-		// 签到被限流也不是账号坏：推理照常，只是当天别想再签到。
-		// 锁住额度探测，避免后台守护每 5 分钟再来磕一次 403。
+		// Check-in being rate-limited does not mean the account is bad: inference works as usual, it just cannot check in again that day.
+		// Lock the quota probe to keep the background daemon from hitting another 403 every 5 minutes.
 		if deepai.IsCheckInRefused(err) {
 			s.Store.LockAccountProbe(a.ID, time.Now().Add(deepai.CheckInRefusedLock), err.Error())
 			return
@@ -243,28 +243,28 @@ func (s *Server) probeBatch(ctx context.Context, accts []*deepai.Account, timeou
 		s.Store.SetAccountAllowance(a.ID, al, err)
 	})
 
-	// 全部被去重跳过时无事可存。
+	// When everything is skipped by dedup, there is nothing to persist.
 	if len(indexes) > 0 {
 		s.persist()
 	}
 	return out
 }
 
-// probeAccounts 探测一批账号并落盘（不关心逐项结果）。
+// probeAccounts probes a batch of accounts and persists to disk (individual results are not of interest).
 func (s *Server) probeAccounts(accts []*deepai.Account) {
 	s.probeBatch(context.Background(), accts, 20*time.Second, true)
 }
 
-// probeAndSave 异步探测单个账号并落盘。
+// probeAndSave asynchronously probes a single account and persists to disk.
 func (s *Server) probeAndSave(a *deepai.Account) {
 	s.probeAccounts([]*deepai.Account{a})
 }
 
-// probeAndSaveAsync 在后台探测一个账号并落盘，把这次异步工作登记到 quotaWG。
+// probeAndSaveAsync probes an account in the background and persists to disk, registering this async work with quotaWG.
 //
-// 登记（Add）必须在起 goroutine 之前：探测会先写内存再 Save()，测试若只等
-// 接口返回就中途退出，后台的落盘会与 t.TempDir() 清理撞上，在 CI 上表现为
-// “TempDir RemoveAll cleanup: directory not empty”。
+// Registration (Add) must happen before starting the goroutine: the probe writes memory first and then calls Save(); if a test only waits for
+// the interface to return and exits midway, the background persist will race with t.TempDir() cleanup, showing up on CI as
+// "TempDir RemoveAll cleanup: directory not empty".
 func (s *Server) probeAndSaveAsync(a *deepai.Account) {
 	if a == nil {
 		return
@@ -276,10 +276,10 @@ func (s *Server) probeAndSaveAsync(a *deepai.Account) {
 	}()
 }
 
-// probeBatchAsync 在后台探测一批账号并落盘，登记到 quotaWG。
+// probeBatchAsync probes a batch of accounts in the background and persists to disk, registering with quotaWG.
 //
-// 管理动作（如分配机器指纹）会改账号状态并触发一次重新探测；这次探测
-// 不在请求作用域内，进程退出前必须等它跑完再落盘。
+// Administrative actions (such as assigning a machine fingerprint) change account state and trigger a re-probe; this probe
+// is not within the request scope, so the process must wait for it to finish before persisting on exit.
 func (s *Server) probeBatchAsync(accts []*deepai.Account) {
 	if len(accts) == 0 {
 		return
@@ -291,16 +291,16 @@ func (s *Server) probeBatchAsync(accts []*deepai.Account) {
 	}()
 }
 
-// probeAsync 异步刷新单个账号的额度；返回是否真正发起。
+// probeAsync asynchronously refreshes a single account's quota; returns whether a probe was actually initiated.
 //
-// 先同步占用槽位再起 goroutine：否则每个请求都会起一个立刻退出的 goroutine，
-// 高并发下就是无意义的调度风暴。
+// Acquire the slot synchronously before starting the goroutine: otherwise every request would start a goroutine that exits immediately,
+// which under high concurrency is a meaningless scheduling storm.
 func (s *Server) probeAsync(a *deepai.Account) bool {
 	if a == nil || !s.claimProbe(a.ID) {
 		return false
 	}
-	// 拿不到全局槽位就放弃：这批过期额度留给下一轮（后台守护或下一次请求），
-	// 不在热点路径上排队等，也不把探针堆成风控特征。
+	// If the global slot cannot be acquired, give up: leave this batch of stale quotas for the next round (background daemon or next request),
+	// without queuing on the hot path or piling up probes into a risk-control signature.
 	select {
 	case s.probeSem <- struct{}{}:
 	default:
@@ -316,9 +316,9 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 		defer cancel()
 		al, err := s.clientFor(a).Theos(ctx, a)
 		if err != nil {
-			// 自动复探失败不改账号状态：推理路径不依赖这次结果，
-			// 把 transient 错误写进 Status/Failures 只会让调度误判。
-			// 但 social_login_required 是策略终态，必须落盘让调度器停下。
+			// A failed automatic re-probe does not change account status: the inference path does not depend on this result,
+			// and writing transient errors into Status/Failures would only cause scheduling misjudgment.
+			// But social_login_required is a terminal policy state and must be persisted to disk so the scheduler stops.
 			if deepai.IsSocialLoginRequired(err) {
 				s.Store.BlockAccount(a.ID, err.Error())
 				if saveErr := s.Store.Save(); saveErr != nil {
@@ -327,8 +327,8 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 				log.Printf("[quota] %s 已被上游要求改用 Google/Apple 登录（social_login_required）", a.Name)
 				return
 			}
-			// 退避必须留下：否则额度永远判 stale，每个选中该号的请求都会再探
-			// 一次，热路径变成 /theos 风暴。
+			// Backoff must be kept: otherwise the quota is always judged stale, and every request that selects this account will probe again,
+			// turning the hot path into a /theos storm.
 			s.Store.RecordProbeFailure(a.ID)
 			if saveErr := s.Store.Save(); saveErr != nil {
 				log.Printf("[quota] 保存探测退避失败: %v", saveErr)
@@ -345,9 +345,9 @@ func (s *Server) probeAsync(a *deepai.Account) bool {
 	return true
 }
 
-// ReprobeStale 探测一批额度信息过旧的账号，返回实际发起的探测数。
+// ReprobeStale probes a batch of accounts whose quota information is too old, returning the number of probes actually initiated.
 //
-// limit<=0 表示不限（测试用）；生产由 QuotaGuardBatch 限流。
+// limit<=0 means unlimited (for testing); in production, QuotaGuardBatch enforces the rate limit.
 func (s *Server) ReprobeStale(limit int) int {
 	now := time.Now()
 	accts := s.Store.Accounts()
@@ -374,7 +374,7 @@ func (s *Server) ReprobeStale(limit int) int {
 	return probed
 }
 
-// probeAccountQuota 探测一个账号的配额；瞬时错误重试一次（入池专用，阻塞）。
+// probeAccountQuota probes one account's quota; retries once on transient errors (for pool admission only, blocking).
 func (s *Server) probeAccountQuota(acct *deepai.Account) (*deepai.Allowance, error) {
 	var al *deepai.Allowance
 	err := retry.Do(context.Background(), probeRetryDelays, deepai.IsTransient, func(parent context.Context) error {

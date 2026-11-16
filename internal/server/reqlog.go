@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// record 记录一次请求元信息。
-// reqLog 是一次请求的日志上下文。
+// record records metadata for one request.
+// reqLog is the log context for one request.
 //
-// 旧版 record() 收 11 个位置参数（key/acct/model/endpoint/stream/status/
-// start/inLen/outLen/usage/err），二十余处调用完全靠记忆参数顺序，
-// 写错编译器也不报错。现在把不变量在构造时固化，调用点只补变化的部分。
+// The old record() took 11 positional parameters (key/acct/model/endpoint/stream/status/
+// start/inLen/outLen/usage/err); more than twenty call sites relied entirely on memorizing the parameter order,
+// and a mistake would not be caught by the compiler. Now invariants are fixed at construction time, and call sites only supply the varying parts.
 type reqLog struct {
 	s        *Server
 	key      string
@@ -24,18 +24,18 @@ type reqLog struct {
 	start    time.Time
 	inLen    int
 
-	// state 是「是否已记录」的共享标记。reqLog 是值类型（各 handler 按值传递），
-	// 所以标记必须放在指针后面：done 可能被不同分支各调一次，只有第一次生效
-	// 才不会把同一个请求记成两条日志。
+	// state is the shared flag for "whether already recorded". reqLog is a value type (passed by value across handlers),
+	// so the flag must live behind a pointer: done may be called once by different branches, and only the first call takes effect
+	// so that the same request is not logged twice.
 	state *reqLogState
 }
 
-// reqLogState 是 reqLog 的跨副本共享状态。
+// reqLogState is the state shared across copies of reqLog.
 type reqLogState struct {
 	recorded atomic.Bool
 }
 
-// newReqLog 固化一次请求的公共字段。acct 可以为 nil（尚未选到账号）。
+// newReqLog fixes the common fields of one request. acct may be nil (no account selected yet).
 func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint string, stream bool, start time.Time, inLen int) reqLog {
 	return reqLog{
 		s: s, key: key, acct: acct, model: model,
@@ -44,19 +44,19 @@ func (s *Server) newReqLog(key string, acct *deepai.Account, model, endpoint str
 	}
 }
 
-// done 落一条请求日志；err 为 nil 视为成功（HTTP 200），否则按错误取状态码。
+// done persists one request log; a nil err is treated as success (HTTP 200), otherwise the status code is derived from the error.
 //
-// 幂等：同一个请求只会被记一次。这样「某条提前返回的分支忘了记 / 加了一层 defer
-// 兜底」都不会造成重复计数，调用方也不必先判断有没有记过。
+// Idempotent: the same request is recorded only once. This way, "a branch that returns early forgets to record / an extra layer of defer
+// fallback" will not cause double counting, and callers do not need to check whether it has been recorded first.
 func (l reqLog) done(outLen int, usage Usage, err error) {
 	l.doneStatus(httpx.StatusOf(err), outLen, usage, err)
 }
 
-// doneStatus 与 done 相同，但状态码由调用方给出。
+// doneStatus is the same as done, but the status code is provided by the caller.
 //
-// 用于「响应已按某个码写给客户端，日志还需额外说明原因」的场景：典型是上游回的
-// 不是 JSON、我们按原样透传成 200 —— 日志里要同时保留 200（客户端实际收到）
-// 与失败原因（Record 会把 e.Err != "" 计入失败数，不会丢出统计）。
+// Used for scenarios where "the response has already been written to the client with a certain code, but the log still needs to explain the reason": typically when the upstream returns
+// non-JSON, and we pass it through as-is as 200 - the log must retain both 200 (what the client actually received)
+// and the failure reason (Record counts e.Err != "" as a failure, so it is not lost from the statistics).
 func (l reqLog) doneStatus(status int, outLen int, usage Usage, err error) {
 	if l.s == nil || l.state == nil {
 		return
@@ -88,8 +88,8 @@ func (l reqLog) doneStatus(status int, outLen int, usage Usage, err error) {
 	l.s.Store.Record(e, outLen)
 }
 
-// apiKey 返回本次请求的调用密钥。
+// apiKey returns the calling key for this request.
 //
-// 只供形状记忆 / 指标这类进程内逻辑使用；日志与统计落盘走 key 的脱敏视图，
-// 不要把完整密钥写进日志。
+// Only for in-process logic such as shape memory / metrics; logs and statistics persisted to disk use the redacted view of the key,
+// do not write the full key into logs.
 func (l reqLog) apiKey() string { return l.key }

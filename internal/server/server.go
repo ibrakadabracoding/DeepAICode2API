@@ -1,4 +1,4 @@
-// Package server 暴露 OpenAI 兼容的 HTTP 接口。
+// Package server exposes an OpenAI-compatible HTTP API.
 package server
 
 import (
@@ -17,94 +17,94 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// Server 是网关 HTTP 服务。
+// Server is the gateway HTTP service.
 type Server struct {
 	Store *store.Store
 	Up    *deepai.Client
-	// Login 保存进行中的浏览器登录会话（内存态）。
+	// Login stores in-progress browser login sessions (in-memory).
 	Login *loginSessions
 
 	refreshMu    sync.Mutex
 	proxyMu      sync.Mutex
 	proxyClients map[string]*deepai.Client
 
-	// enrollPool 是入池自动分配代理用的进程内单例。
+	// enrollPool is an in-process singleton used for automatic proxy assignment when enrolling into the pool.
 	//
-	// 浏览器登录一次只入一个号；若每次新建池，轮询游标都会从 0 开始，
-	// 所有号就都落在第一个出口上（等于没分配）。单例让连续入池能真正轮转。
+	// A browser login enrolls only one account at a time; if a new pool is created each time, the rotation cursor will always start from 0,
+	// so all accounts end up on the first egress (equivalent to no assignment). The singleton allows consecutive enrollments to actually rotate.
 	enrollPoolOnce sync.Once
 	enrollPool     *proxy.ProxyPool
 
-	// inflight 限制单账号同时进行的上游请求数。
-	// 调度只保证「这一轮选到谁」，不保证不会把并发全压在少数账号上：
-	// 压测时 12 并发可能全落在同一两个号上，放大上游限流后的长尾。
+	// inflight limits the number of concurrent upstream requests per account.
+	// Scheduling only guarantees "who is selected in this round"; it does not guarantee that concurrency won't all be concentrated on a few accounts:
+	// During load testing, 12 concurrent requests may all land on the same one or two accounts, amplifying the long tail after upstream rate limiting.
 	inflightMu sync.Mutex
 	inflight   map[string]int
 
-	// quotaReprobeDelays 是入池后 0 额度的复探退避序列（测试可注入短值）。
+	// quotaReprobeDelays is the re-probe backoff sequence for 0 quota after enrollment (tests can inject short values).
 	quotaReprobeDelays []time.Duration
 
-	// laneMu / laneCheckedAt 是车道探测的节流：426 会成批出现，
-	// 没有冷却就会把一次车道升级变成一轮探测风暴。
+	// laneMu / laneCheckedAt throttle lane probing: 426 responses appear in batches,
+	// without cooldown, a single lane upgrade turns into a probing storm.
 	laneMu        sync.Mutex
 	laneCheckedAt time.Time
 
-	// admissionWait 是「槽位全满」时的排队上限（测试可注入 0 立即 429）。
+	// admissionWait is the queueing limit when "all slots are full" (tests can inject 0 to return 429 immediately).
 	admissionWait time.Duration
 
-	// quotaWG 跟踪已排期的后台落盘工作（配额复探 / 入池探活 / 按需复探）。
+	// quotaWG tracks scheduled background persistence work (quota re-probe / enrollment liveness probe / on-demand re-probe).
 	//
-	// 这些 goroutine 在写完内存后还要 Save() 落盘；测试必须等它完全收尾
-	// 再结束，否则 t.TempDir() 的清理会和落盘撞上（CI 上表现为
-	// "TempDir RemoveAll cleanup: directory not empty"）。
-	// 进程退出时由 Close 统一等待，避免「最后一次 Save 之后又有后台写」。
+	// These goroutines still need to call Save() to persist to disk after writing memory; tests must wait for them to fully finish
+	// before ending; otherwise t.TempDir() cleanup will collide with persistence (on CI this manifests as
+	// "TempDir RemoveAll cleanup: directory not empty").
+	// On process exit, Close waits for them uniformly to avoid "background writes after the last Save".
 	quotaWG sync.WaitGroup
 
-	// stopCh 在 Close 时关闭，用于打断后台任务里的长睡眠（配额复探退避最长 12 分钟）。
+	// stopCh is closed on Close to interrupt long sleeps in background tasks (quota re-probe backoff up to 12 minutes).
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
-	// probing 是配额探测的在途去重表（按账号 ID）。
+	// probing is the in-flight deduplication table for quota probing (by account ID).
 	//
-	// 三条路径会同时探同一批账号：手动 checkin、入池后延迟复探、
-	// 推理时的按需复探。没有它时同一个号会被连打多次，既浪费额度
-	// 也容易触发上游风控。
+	// Three paths may probe the same batch of accounts simultaneously: manual checkin, delayed re-probe after enrollment,
+	// On-demand re-probe during inference. Without it, the same account gets hit repeatedly, wasting quota
+	// and easily triggering upstream risk control.
 	probeMu sync.Mutex
 	probing map[string]struct{}
 
-	// probeSem 是全局在途探测上限（手动批次 / 后台守护 / 按需复探共用）。
+	// probeSem is the global in-flight probe limit (shared by manual batches / background daemon / on-demand re-probe).
 	//
-	// 653 个号的额度快照会同时变旧；若按需复探不加限制，一波流量就能
-	// 叠出几十上百个并行的 /theos 请求——那是最容易被上游风控的形态。
+	// Quota snapshots for 653 accounts all go stale at the same time; if on-demand re-probe is unbounded, a single traffic burst can
+	// stack up dozens or hundreds of parallel /theos requests - that is the shape most likely to trigger upstream risk control.
 	probeSem chan struct{}
 
-	// limiter 是按密钥的令牌桶 + 并发闸门（数据面限流）。
+	// limiter is a per-key token bucket + concurrency gate (data-plane rate limiting).
 	limiter *keyRateLimiter
 
-	// adminGuard 是管理口令的失败退避（防爆破）；adminGuardBase 可被测试注入。
+	// adminGuard is failure backoff for the admin password (anti-brute-force); adminGuardBase can be injected by tests.
 	adminGuard     *adminGuard
 	adminGuardBase time.Duration
 
-	// metrics 是 /metrics 导出的进程内计数（原子量，无需锁）。
+	// metrics are in-process counters exported by /metrics (atomics, no lock needed).
 	metrics *metrics
 
-	// Version 是构建版本（main 用 -ldflags 注入）；空值对外表现为 dev。
+	// Version is the build version (injected by main via -ldflags); an empty value is exposed externally as dev.
 	Version string
 
-	// versionMu / versionCache / versionAt 缓存「最新 release」的查询结果，
-	// 避免每次打开控制台都去打 GitHub（未认证请求有速率限制）。
-	// versionInFlight 非 nil 表示已有一个 goroutine 在查（并发请求等它的结果）。
+	// versionMu / versionCache / versionAt cache the result of the "latest release" query,
+	// avoiding a GitHub request every time the console is opened (unauthenticated requests are rate-limited).
+	// versionInFlight non-nil means a goroutine is already querying (concurrent requests wait for its result).
 	versionMu       sync.Mutex
 	versionCache    *versionInfo
 	versionAt       time.Time
 	versionInFlight chan struct{}
 
-	// shapeNeed 记忆「哪些调用方需要桌面端形状」（见 shape.go）。
+	// shapeNeed remembers "which callers need the desktop shape" (see shape.go).
 	shapeMu   sync.Mutex
 	shapeNeed map[string]time.Time
 }
 
-// New 构造服务。
+// New constructs the service.
 func New(st *store.Store) *Server {
 	s := &Server{
 		Store: st, Up: deepai.NewClient(), Login: newLoginSessions(),
@@ -119,8 +119,8 @@ func New(st *store.Store) *Server {
 		adminGuard:         newAdminGuard(),
 		metrics:            newMetrics(),
 	}
-	// 上次探测到的车道优先（跨重启保留）；CurrentLane 会区分「本次构建验证过
-	// 的探测值」与「旧版本残留」，后者才用较新的编译期默认值兜底。
+	// The lane detected last time takes priority (preserved across restarts); CurrentLane distinguishes "the probe value verified by this build"
+	// from "leftovers of an older version"; only the latter falls back to the newer compile-time default.
 	if lane := strings.TrimSpace(st.Settings().Lane); lane != "" {
 		s.Up.SetLane(s.CurrentLane())
 	}
@@ -128,10 +128,10 @@ func New(st *store.Store) *Server {
 	return s
 }
 
-// applyRuntimeSettings 把「可运行期调整」的设置同步到已缓存的客户端。
+// applyRuntimeSettings syncs "runtime-adjustable" settings to already-cached clients.
 //
-// 车道走 SetLane；签到预算走 SetCheckInBudget。两者都必须同时覆盖
-// s.Up 和按代理缓存的客户端，否则直连号与代理号表现不一致。
+// Lane goes through SetLane; check-in budget goes through SetCheckInBudget. Both must cover
+// s.Up and the proxy-cached clients at the same time, otherwise direct accounts and proxy accounts behave inconsistently.
 func (s *Server) applyRuntimeSettings() {
 	budget := time.Duration(s.Store.Settings().CheckinBlockMS) * time.Millisecond
 	s.Up.SetCheckInBudget(budget)
@@ -142,11 +142,11 @@ func (s *Server) applyRuntimeSettings() {
 	s.proxyMu.Unlock()
 }
 
-// Handler 返回完整路由。
+// Handler returns the full routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// 探活
+	// Liveness probe
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("pong"))
@@ -154,30 +154,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/healthz", s.handleHealth)
 
-	// 推理（OpenAI 兼容）
+	// Inference (OpenAI-compatible)
 	mux.HandleFunc("/v1/models", s.withAuth(s.handleModels))
 	mux.HandleFunc("/v1/chat/completions", s.withAuth(s.handleChatCompletions))
 	mux.HandleFunc("/v1/responses", s.withAuth(s.handleResponses))
 
-	// Anthropic 兼容
+	// Anthropic-compatible
 	mux.HandleFunc("/v1/messages", s.withAuth(s.handleAnthropicMessages))
 	mux.HandleFunc("/v1/messages/count_tokens", s.withAuth(s.handleAnthropicCountTokens))
 
-	// 音频
+	// Audio
 	mux.HandleFunc("/v1/audio/transcriptions", s.withAuth(s.handleTranscriptions))
 	mux.HandleFunc("/v1/audio/translations", s.withAuth(s.handleTranscriptions))
 
-	// DeepAI 原生能力扩展
+	// DeepAI native capability extensions
 	mux.HandleFunc("/v1/deepai/web_search", s.withAuth(s.handleWebSearch))
 	mux.HandleFunc("/v1/deepai/find_service", s.withAuth(s.handleFindService))
 	mux.HandleFunc("/v1/deepai/theos", s.withAuth(s.handleTheos))
 	mux.HandleFunc("/v1/deepai/usage", s.withAuth(s.handleUsage))
-	// 兼容简写
+	// Compatible shorthand
 	mux.HandleFunc("/v1/web_search", s.withAuth(s.handleWebSearch))
 	mux.HandleFunc("/v1/theos", s.withAuth(s.handleTheos))
 	mux.HandleFunc("/v1/usage", s.withAuth(s.handleUsage))
 
-	// 控制台 API（统一走管理鉴权 + 同源校验）
+	// Console API (all go through admin authentication + same-origin check)
 	mux.HandleFunc("/admin/api/state", s.withAdminAuth(s.handleAdminState))
 	mux.HandleFunc("/admin/api/overview", s.withAdminAuth(s.handleAdminOverview))
 	mux.HandleFunc("/admin/api/accounts", s.withAdminAuth(s.handleAdminAccounts))
@@ -186,46 +186,46 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin/api/stats", s.withAdminAuth(s.handleAdminStats))
 	mux.HandleFunc("/admin/api/settings", s.withAdminAuth(s.handleAdminSettings))
 	mux.HandleFunc("/admin/api/checkin", s.withAdminAuth(s.handleAdminCheckin))
-	// 版本与更新检查（服务端代查 GitHub，前端 CSP 不允许直连）。
+	// Version and update check (the server queries GitHub on the client's behalf; the frontend CSP does not allow direct connections).
 	mux.HandleFunc("/admin/api/version", s.withAdminAuth(s.handleAdminVersion))
 
-	// 监控：Prometheus 文本格式（与 /admin/api/* 同级鉴权）。
+	// Monitoring: Prometheus text format (same authentication level as /admin/api/*).
 	mux.HandleFunc("/metrics", s.withAdminAuth(s.handleMetrics))
 
 	mux.HandleFunc("/admin/api/models", s.withAdminAuth(s.handleAdminModels))
 	mux.HandleFunc("/admin/api/login/start", s.withAdminAuth(s.handleLoginStart))
 	mux.HandleFunc("/admin/api/login/poll", s.withAdminAuth(s.handleLoginPoll))
-	// 粘贴回调 URL：Docker / 远程部署时浏览器回调打不开，用这条入口完成兑换。
+	// Paste callback URL: when the browser callback cannot be reached under Docker / remote deployment, use this entry point to complete redemption.
 	mux.HandleFunc("/admin/api/login/callback", s.withAdminAuth(s.handleLoginCallback))
-	// 浏览器登录跳转：session id 是一次性随机数，服务端只跳到固定的上游登录页。
+	// Browser login redirect: the session id is a one-time random value, and the server only redirects to the fixed upstream login page.
 	mux.HandleFunc("/login/open", s.handleLoginOpen)
 
-	// 口令登录页：控制台顶栏不再放口令输入框，未登录时跳到这里。
+	// Passphrase login page: the console top bar no longer hosts a passphrase input box; unauthenticated users are redirected here.
 	mux.HandleFunc("/login", serveLogin)
-	// 口令校验入口：只回答“这个口令对不对”，不返回任何敏感信息。
+	// Passphrase verification entry: only answers "is this passphrase correct" and returns no sensitive information.
 	mux.HandleFunc("/admin/api/auth", s.withAdminAuth(s.handleAdminAuth))
 
-	// 控制台静态资源：样式、标签页图标与 ES module 脚本（页面本身走 /）。
+	// Console static assets: styles, tab icons, and ES module scripts (the page itself is served at /).
 	mux.HandleFunc("/style.css", s.handleConsoleAsset)
-	// 浏览器自动请求的固定路径：不给的话每次打开控制台都多一条 404。
+	// Fixed paths the browser requests automatically: without them, every console open adds another 404.
 	mux.HandleFunc("/favicon.ico", s.handleConsoleAsset)
 	mux.HandleFunc("/apple-touch-icon.png", s.handleConsoleAsset)
 	mux.HandleFunc("/js/", s.handleConsoleAsset)
 	mux.HandleFunc("/", s.handleRoot)
 
-	// 压缩在最内层：外层（观测）看到的是压缩后的字节数。
+	// Compression is innermost: the outer layer (observability) sees the compressed byte count.
 	return s.withCORS(s.withObservability(httpx.WithGzip(mux)))
 }
 
-// RefreshModels 从上游拉取模型目录并落盘。
+// RefreshModels pulls the model catalog from upstream and persists it to disk.
 func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	// 2026-11-14 起上游 /models 要求 Api-Key：没有账号时提前给出可行动的
-	// 错误，而不是把上游的 401 原样抛给控制台（那看起来像「Key 失效」）。
+	// As of 2026-11-14, upstream /models requires an Api-Key: when no account is available, return an actionable
+	// error in advance instead of passing the upstream 401 straight through to the console (which looks like "Key invalid").
 	acct := s.probeAccount()
 	if acct == nil {
 		return nil, errors.New("上游 /models 需要 Api-Key：请先导入或添加一个账号再刷新目录")
@@ -241,11 +241,11 @@ func (s *Server) RefreshModels(ctx context.Context) ([]deepai.Model, error) {
 	return models, nil
 }
 
-// --- 基础端点 ---
+// --- Base endpoints ---
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// 口径见 deepai.AccountReady / AccountDegraded 与额度时效；
-	// 与 /metrics 共用 poolSnapshot，避免两处给出互相矛盾的数。
+	// See deepai.AccountReady / AccountDegraded and quota validity for the criteria;
+	// Shares poolSnapshot with /metrics to avoid conflicting numbers in two places.
 	pool := s.poolSnapshot()
 	models := s.catalog()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -262,7 +262,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"strict_model":  s.Store.Settings().StrictModel,
 		"machine_id":    shortMachine(s.Store.MachineID()),
 		"machine_ready": s.Store.MachineID() != "",
-		// 控制台据此决定是否把用户送到 /login：未设口令时本机直接放行。
+		// The console uses this to decide whether to send the user to /login: when no password is set, allow local access directly.
 		"admin_required": s.Store.Settings().AdminPassword != "",
 	})
 }
@@ -299,7 +299,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
-// handleRoot 返回控制台单页；其余未知路径返回 404。
+// handleRoot returns the console single page; other unknown paths return 404.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		httpx.WriteErr(w, http.StatusNotFound, "未找到该路径", "invalid_request_error")

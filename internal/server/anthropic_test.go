@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// anthropicChatResponse 是上游返回的标准 OpenAI chat 响应（含思维链与工具调用）。
+// anthropicChatResponse is the standard OpenAI chat response returned by the upstream (including chain-of-thought and tool calls).
 const anthropicChatResponse = `{
   "id": "chatcmpl-1",
   "object": "chat.completion",
@@ -30,7 +30,7 @@ const anthropicChatResponse = `{
   "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33}
 }`
 
-// anthropicRequest 是一个覆盖 system / 图片 / 工具 / stop 的典型 Claude Code 请求。
+// anthropicRequest is a typical Claude Code request covering system / images / tools / stop.
 const anthropicRequestBody = `{
   "model": "claude-sonnet-4",
   "max_tokens": 512,
@@ -63,7 +63,7 @@ func TestAnthropicBlockingRoundTrip(t *testing.T) {
 		t.Fatalf("状态码 = %d，期望 200：%s", rec.Code, rec.Body.String())
 	}
 
-	// --- 上游请求：Anthropic → OpenAI 的映射 ---
+	// --- Upstream request: Anthropic → OpenAI mapping ---
 	up := u.last(t)
 	if up.Path != "/deepai_code/chat/completions" {
 		t.Fatalf("上游路径 = %q", up.Path)
@@ -98,7 +98,7 @@ func TestAnthropicBlockingRoundTrip(t *testing.T) {
 	if sys["role"] != "system" {
 		t.Fatalf("首条消息应为 system: %#v", sys)
 	}
-	// system 的两个文本块用 "\n" 拼接。
+	// The two text blocks of system are joined with "\n".
 	if got, _ := sys["content"].(string); got != "你是助手\n回答简短" {
 		t.Fatalf("system 拼接错误: %q", got)
 	}
@@ -126,7 +126,7 @@ func TestAnthropicBlockingRoundTrip(t *testing.T) {
 		t.Fatal("input_schema 应映射为 parameters")
 	}
 
-	// --- 网关响应：OpenAI → Anthropic 的映射 ---
+	// --- Gateway response: OpenAI → Anthropic mapping ---
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
 	if out["type"] != "message" || out["role"] != "assistant" {
 		t.Fatalf("响应骨架错误: %#v", out)
@@ -208,7 +208,7 @@ func TestAnthropicStreamEventSequence(t *testing.T) {
 		t.Fatalf("末个事件应为 message_stop，实际 %q", last)
 	}
 
-	// 每个 content_block_start 都必须有配对的 content_block_stop，且 index 递增。
+	// Every content_block_start must have a paired content_block_stop, and index must increase.
 	var openIdx, starts, stops []float64
 	for _, e := range events {
 		m := e.JSON(t)
@@ -217,7 +217,7 @@ func TestAnthropicStreamEventSequence(t *testing.T) {
 			idx := m["index"].(float64)
 			starts = append(starts, idx)
 			openIdx = append(openIdx, idx)
-			// 每开一个新块之前，上一个必须已关闭。
+			// Before opening a new block, the previous one must already be closed.
 			if len(openIdx) > 1 {
 				t.Fatalf("块 %v 未关闭就开了新块 %v", openIdx[:len(openIdx)-1], idx)
 			}
@@ -242,7 +242,7 @@ func TestAnthropicStreamEventSequence(t *testing.T) {
 		}
 	}
 
-	// 校验关键增量：思维链、文本、工具参数分片。
+	// Verify the key deltas: chain-of-thought, text, and tool argument fragments.
 	var sawThinking, sawText, sawToolArgs bool
 	for _, e := range events {
 		if e.Event != "content_block_delta" {
@@ -266,7 +266,7 @@ func TestAnthropicStreamEventSequence(t *testing.T) {
 		t.Fatalf("增量事件缺失: thinking=%v text=%v tool=%v", sawThinking, sawText, sawToolArgs)
 	}
 
-	// message_delta 必须带 stop_reason 与用量。
+	// message_delta must carry stop_reason and usage.
 	var sawDelta bool
 	for _, e := range events {
 		if e.Event != "message_delta" {
@@ -329,7 +329,7 @@ func TestAnthropicToolResultBecomesToolRole(t *testing.T) {
 	})
 	s, key := newTestServer(t, u)
 
-	// assistant 发出 tool_use，user 回 tool_result：应展开为 assistant(tool_calls) + tool 消息。
+	// assistant emits tool_use, user replies with tool_result: should be expanded into assistant(tool_calls) + tool messages.
 	body := `{"model":"m","max_tokens":10,"messages":[
 	  {"role":"assistant","content":[
 	    {"type":"text","text":"好的"},
@@ -373,9 +373,9 @@ func TestAnthropicToolChoiceMapping(t *testing.T) {
 		{`{"type":"any"}`, "required"},
 		{`{"type":"none"}`, "none"},
 		{`{"type":"tool","name":"f"}`, `map`},
-		{`{"type":"tool"}`, nil},    // 缺 name 应忽略
-		{`{"type":"unknown"}`, nil}, // 未知类型忽略
-		{``, nil},                   // 空
+		{`{"type":"tool"}`, nil},    // Missing name should be ignored
+		{`{"type":"unknown"}`, nil}, // Unknown types are ignored
+		{``, nil},                   // empty
 	}
 	for _, c := range cases {
 		var raw []byte
@@ -445,7 +445,7 @@ func TestAnthropicUpstreamErrorMapping(t *testing.T) {
 
 	rec := do(t, s, http.MethodPost, "/v1/messages", key,
 		`{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	// 只有一个账号且鉴权失败：重试耗尽后回传上游状态码。
+	// Only one account and authentication fails: after retries are exhausted, return the upstream status code.
 	if rec.Code == http.StatusOK {
 		t.Fatalf("鉴权失败不应返回 200：%s", rec.Body.String())
 	}
@@ -459,9 +459,9 @@ func TestAnthropicUpstreamErrorMapping(t *testing.T) {
 	}
 }
 
-// Anthropic 的 thinking / output_config.effort 必须映射到上游的
-// reasoning_effort：此前被解析后直接丢弃，等于把调用方要求的推理强度
-// 静默降级成上游默认值。
+// Anthropic's thinking / output_config.effort must be mapped to the upstream's
+// reasoning_effort: previously it was parsed and then discarded outright, effectively taking the reasoning effort requested by the caller
+// and silently downgrading it to the upstream default.
 func TestAnthropicEffortMapping(t *testing.T) {
 	cases := []struct {
 		name string

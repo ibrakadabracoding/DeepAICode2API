@@ -11,23 +11,23 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// inflightCount 读取当前在途账号槽位数（仅测试用）。
+// inflightCount reads the current number of in-flight account slots (test only).
 func inflightCount(s *Server) int {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	return len(s.inflight)
 }
 
-// TestShapeFallbackRetryKeepsIdleTimeoutGuard 覆盖「请求体形状回退」这条 2xx 返回路径。
+// TestShapeFallbackRetryKeepsIdleTimeoutGuard covers the "request body shape fallback" 2xx return path.
 //
-// 两条返回 2xx 的路径（正常响应 / 回退重试）必须包同样的两层：空闲超时 + 归还
-// 账号槽位。历史上回退路径只包了 releaseBody，上游发完首帧挂住时，槽位与连接会
-// 一直挂到客户端断开为止——正是 idle.go 里描述的那个坑，只是漏了一条分支。
+// Both 2xx return paths (normal response / fallback retry) must wrap the same two layers: idle timeout + release
+// account slot. Historically, the fallback path only wrapped releaseBody; when the upstream hangs after sending the first frame, the slot and connection will
+// stay hung until the client disconnects-exactly the pitfall described in idle.go, just a missing branch.
 func TestShapeFallbackRetryKeepsIdleTimeoutGuard(t *testing.T) {
 	var chatCalls atomic.Int32
 	rejected := `{"error":{"message":"This request is not one DeepAI Code sends.","code":"invalid_request_error"}}`
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		// ModelURL 会拼上 /deepai_code 前缀，这里比较完整路径。
+		// ModelURL appends the /deepai_code prefix; here we compare the full path.
 		if r.URL.Path != "/deepai_code"+deepai.PathChat {
 			http.NotFound(w, r)
 			return

@@ -9,8 +9,9 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 探测失败后的冷却必须真的挡住后台守护：否则每 5 分钟会把同一批失败号
-// 全部重探一遍（失败往往成片），变成持续的 /theos 风暴。
+// The cooldown after a failed probe must actually block the background guardian: otherwise every
+// 5 minutes it re-probes the whole batch of failed accounts (failures often come in batches), turning
+// into a sustained /theos storm.
 func TestQuotaNeedsRefreshRespectsProbeCooldown(t *testing.T) {
 	now := time.Now()
 
@@ -31,8 +32,8 @@ func TestQuotaNeedsRefreshRespectsProbeCooldown(t *testing.T) {
 	}
 }
 
-// check_in_refused 要落 6h 探测锁，且不能把账号标成 error
-// （推理照常可用，只是当天落在替身分支）。
+// check_in_refused must set the 6h probe lock and must not mark the account as error
+// (inference still works; it just falls to the substitute branch for the day).
 func TestProbeCheckInRefusedLocksProbe(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -58,8 +59,9 @@ func TestProbeCheckInRefusedLocksProbe(t *testing.T) {
 	}
 }
 
-// 推理热路径的按需复探失败后必须留退避：线上（docs/changes.md §61）同一个号
-// 1 小时被重探 323 次，就是因为这里只写了日志、没写 ProbeAfter。
+// A failed on-demand re-probe on the inference hot path must leave backoff behind: in production
+// (docs/changes.md §61) the same account was re-probed 323 times in 1 hour because this path only
+// logged and never wrote ProbeAfter.
 func TestProbeAsyncFailureRecordsBackoff(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -95,7 +97,7 @@ func TestProbeAsyncFailureRecordsBackoff(t *testing.T) {
 	if quotaNeedsRefresh(got, time.Now(), quotaStaleAfter) {
 		t.Fatal("冷却期内不应再被判为需要复探（否则每个请求都会重探一次）")
 	}
-	// 热路径失败不能污染调度：状态与失败计数都不动。
+	// Hot-path failures must not pollute scheduling: neither status nor failure count changes.
 	if got.Status != "ok" || got.Failures != 0 {
 		t.Fatalf("不应改调度状态: status=%q failures=%d", got.Status, got.Failures)
 	}

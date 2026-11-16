@@ -7,12 +7,13 @@ import (
 	"strings"
 )
 
-// --- CORS 与来源校验 ---
+// --- CORS and origin validation ---
 
-// withCORS 处理跨域。
+// withCORS handles cross-origin requests.
 //
-// 默认只放行本机来源（localhost / 127.0.0.1 / [::1]，任意端口）；
-// 需局域网访问时在设置里显式列出逗号分隔的来源。不提供通配符。
+// By default only local origins are allowed (localhost / 127.0.0.1 / [::1], any port);
+// for LAN access, explicitly list comma-separated origins in settings. No wildcards are
+// provided.
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		allowed := s.corsOrigin(r.Header.Get("Origin"))
@@ -25,7 +26,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 	})
 }
 
-// writeCORSHeaders 仅在来源通过校验时写入跨域响应头。
+// writeCORSHeaders writes CORS response headers only when the origin passes validation.
 func writeCORSHeaders(w http.ResponseWriter, allowed string) {
 	if allowed == "" || hasWildcard(allowed) {
 		return
@@ -38,7 +39,8 @@ func writeCORSHeaders(w http.ResponseWriter, allowed string) {
 	h.Set("Access-Control-Expose-Headers", "X-Request-Id, Retry-After")
 }
 
-// corsOrigin 返回应当回给浏览器的 Allow-Origin 值，空串表示不放行。
+// corsOrigin returns the Allow-Origin value that should be sent back to the browser; an
+// empty string means not allowed.
 func (s *Server) corsOrigin(raw string) string {
 	if raw == "" || raw == "null" {
 		return ""
@@ -48,7 +50,7 @@ func (s *Server) corsOrigin(raw string) string {
 		return ""
 	}
 
-	// 1) 显式允许列表（逗号分隔，值来自控制台设置）
+	// 1) Explicit allow list (comma-separated; values come from console settings)
 	if cfg := strings.TrimSpace(s.Store.Settings().CORSOrigin); cfg != "" {
 		for _, entry := range strings.Split(cfg, ",") {
 			entry = strings.TrimSpace(entry)
@@ -59,7 +61,7 @@ func (s *Server) corsOrigin(raw string) string {
 		return ""
 	}
 
-	// 2) 默认仅本机：主机名必须在环回集合内
+	// 2) Localhost only by default: hostname must be in the loopback set
 	if !isLoopbackHost(u.Hostname()) {
 		return ""
 	}

@@ -8,10 +8,10 @@ import (
 	"time"
 )
 
-// slowBody 是一个可以按测试节奏喂字节的 ReadCloser。
+// slowBody is a ReadCloser that can feed bytes at the test's pace.
 //
-// 用 channel 而不是 time.Sleep：测试要证明“在 X 毫秒内没数据就超时”，
-// 让 Read 自己阻塞在 channel 上，计时由 idleTimeoutBody 负责。
+// Use a channel instead of time.Sleep: the test must prove "timeout if no data within X milliseconds",
+// let Read block on the channel itself, and let idleTimeoutBody handle the timing.
 type slowBody struct {
 	ch     chan []byte
 	once   sync.Once
@@ -39,7 +39,7 @@ func (b *slowBody) Close() error {
 	return nil
 }
 
-// readAsync 在后台读一次，用 channel 把结果送回来（Read 会阻塞到超时）。
+// readAsync reads once in the background and sends the result back over a channel (Read blocks until timeout).
 func readAsync(body io.Reader) <-chan error {
 	done := make(chan error, 1)
 	go func() {
@@ -50,14 +50,14 @@ func readAsync(body io.Reader) <-chan error {
 	return done
 }
 
-// TestIdleTimeoutAllowsSlowFirstByte 固化「非流式长思考不被当成空闲」：
-// 首字节超过帧间空闲预算、但仍在首字节预算内时必须放行。
+// TestIdleTimeoutAllowsSlowFirstByte pins down "non-streaming long thinking is not treated as idle":
+// when the first byte exceeds the inter-frame idle budget but is still within the first-byte budget, it must be allowed through.
 func TestIdleTimeoutAllowsSlowFirstByte(t *testing.T) {
 	src := newSlowBody()
 	body := newIdleTimeoutBody(src, 20*time.Millisecond, 300*time.Millisecond)
 	defer body.Close()
 
-	// 80ms > idle(20ms)，但 < first(300ms)：以前这里会被判死。
+	// 80ms > idle(20ms), but < first(300ms): this used to be judged as dead here.
 	time.Sleep(80 * time.Millisecond)
 	src.ch <- []byte("a")
 
@@ -71,8 +71,8 @@ func TestIdleTimeoutAllowsSlowFirstByte(t *testing.T) {
 	}
 }
 
-// TestIdleTimeoutAfterFirstByte 固化「拿到首字节后切回帧间空闲预算」：
-// 首字节之后静默超过 idle 必须被收尾。
+// TestIdleTimeoutAfterFirstByte pins down "switch back to the inter-frame idle budget after the first byte is received":
+// silence exceeding idle after the first byte must be finalized.
 func TestIdleTimeoutAfterFirstByte(t *testing.T) {
 	src := newSlowBody()
 	body := newIdleTimeoutBody(src, 20*time.Millisecond, 500*time.Millisecond)
@@ -93,7 +93,7 @@ func TestIdleTimeoutAfterFirstByte(t *testing.T) {
 	}
 }
 
-// TestIdleTimeoutFirstByteBudget 固化「首字节预算耗尽」：上游连首字节都不给。
+// TestIdleTimeoutFirstByteBudget pins down "first-byte budget exhausted": the upstream does not even provide the first byte.
 func TestIdleTimeoutFirstByteBudget(t *testing.T) {
 	src := newSlowBody()
 	body := newIdleTimeoutBody(src, 20*time.Millisecond, 30*time.Millisecond)
@@ -109,7 +109,7 @@ func TestIdleTimeoutFirstByteBudget(t *testing.T) {
 	}
 }
 
-// TestHoldResponseBodyBudgets 固化「流式与非流式用不同首字节预算」。
+// TestHoldResponseBodyBudgets pins down "streaming and non-streaming use different first-byte budgets".
 func TestHoldResponseBodyBudgets(t *testing.T) {
 	s := &Server{inflight: map[string]int{}}
 

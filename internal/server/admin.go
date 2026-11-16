@@ -10,9 +10,9 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// --- 控制台管理接口 ---
+// --- Console admin endpoints ---
 
-// sanitizedSettings 返回可下发给前端的设置（管理密码不外泄）。
+// sanitizedSettings returns the settings that may be sent to the frontend (the admin password never leaks).
 func sanitizedSettings(st store.Settings) map[string]any {
 	return map[string]any{
 		"model_aliases":        st.ModelAliases,
@@ -32,11 +32,12 @@ func sanitizedSettings(st store.Settings) map[string]any {
 	}
 }
 
-// --- 控制台 API ---
+// --- Console API ---
 
 func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
-	// 兼容端点：默认仍下发全部账号（外部脚本可能在用）。控制台已改用
-	// /admin/api/overview + /admin/api/accounts（分页）；需要小响应时加 ?accounts=0。
+	// Compatibility endpoint: it still returns all accounts by default (external scripts
+	// may rely on it). The console now uses /admin/api/overview + /admin/api/accounts
+	// (paginated); add ?accounts=0 when a smaller response is needed.
 	var safe []map[string]any
 	if r.URL.Query().Get("accounts") != "0" {
 		accts := s.Store.Accounts()
@@ -71,11 +72,13 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			Group  string `json:"group"`
 			Key    string `json:"key"`
 		}
-		// 畸形 JSON 直接报错；空体仍然合法（等价于「新建一把默认密钥」）。
+		// Malformed JSON is rejected outright; an empty body is still valid
+		// (equivalent to "create a key with the defaults").
 		if !httpx.DecodeOptionalJSON(w, r, &body) {
 			return
 		}
-		// action=set-group：只改绑定分组（保持密钥值不变）；其余 / 空值仍为新建。
+		// action=set-group: only changes the bound group (the key value is unchanged);
+		// anything else / empty still creates a new key.
 		if body.Action == "set-group" {
 			key := s.resolveKeyRef(strings.TrimSpace(body.Key))
 			if key == "" {
@@ -102,10 +105,13 @@ func (s *Server) handleAdminKeys(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteErr(w, http.StatusBadRequest, "缺少 key 或 toggle 参数", "invalid_request_error")
 			return
 		}
-		// 先校验再变更：resolveKeyRef 找不到时会原样返回，所以存在性得自己查。
-		// 否则「删不存在的 Key」会回 200 {"ok":true} 还落一次盘，控制台看到成功、
-		// 列表却没变（典型场景：另一个标签页已经删过这把 Key）。
-		// 两个 ref 一起校验也是为此：不能「删成功了、切失败了」半途而废后回 404。
+		// Validate before mutating: resolveKeyRef returns its input unchanged when it
+		// finds nothing, so existence has to be checked here. Otherwise "delete a
+		// nonexistent key" returns 200 {"ok":true} and even persists to disk while the
+		// console shows success and the list stays the same (typically because another
+		// tab already deleted that key). Both refs are validated for the same reason:
+		// we must not delete successfully, fail the toggle, and then return 404 halfway
+		// through.
 		delKey, togKey := s.resolveKeyRef(delRef), s.resolveKeyRef(togRef)
 		if delRef != "" && !s.keyExists(delKey) {
 			httpx.WriteErr(w, http.StatusNotFound, "密钥不存在（可能已被删除或吊销）", "not_found_error")
@@ -139,12 +145,13 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodGet:
 	default:
-		// 以前只拦 DELETE，POST / PUT 会把日志当查询结果回包，容易被当成“写成功”。
+		// Only DELETE used to be rejected; POST / PUT returned logs as a query result,
+		// easily mistaken for a successful write.
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 GET / DELETE", "invalid_request_error")
 		return
 	}
-	// 支持 limit / since / endpoint / account / min_status / q。
-	// 无参数时行为与旧版一致（最近 limit 条，默认 200）。
+	// Supports limit / since / endpoint / account / min_status / q.
+	// With no parameters, behavior matches the old version (latest limit entries, default 200).
 	f := logFilterFromQuery(r)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"logs":  s.Store.QueryLogs(f),
@@ -165,10 +172,11 @@ func (s *Server) handleAdminStats(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, s.Store.Stats())
 }
 
-// settingsPatch 是控制台提交的设置增量。
+// settingsPatch is the settings delta submitted by the console.
 //
-// 全部字段用指针：nil 表示“本次不改”，与“显式设成 0 / 空串”区分开。
-// 这一点对限流参数尤其重要：0 是“关闭限流”的合法值。
+// Every field is a pointer: nil means "leave unchanged", which is distinct from
+// "explicitly set to 0 / empty string". This matters especially for the rate limit
+// parameters, where 0 is a legitimate value meaning "rate limiting off".
 type settingsPatch struct {
 	ModelAliases       map[string]string `json:"model_aliases"`
 	RequestTimeout     *int              `json:"request_timeout_sec"`
@@ -185,7 +193,7 @@ type settingsPatch struct {
 	PresetDesktopShape *bool             `json:"preset_desktop_shape"`
 }
 
-// apply 把增量合入设置（调用方持写锁）。
+// apply merges the delta into the settings (the caller holds the write lock).
 func (p settingsPatch) apply(st *store.Settings) {
 	if p.ModelAliases != nil {
 		st.ModelAliases = p.ModelAliases
@@ -211,7 +219,8 @@ func (p settingsPatch) apply(st *store.Settings) {
 	if p.StrictModel != nil {
 		st.StrictModel = *p.StrictModel
 	}
-	// 限流参数允许显式设成 0（关闭限流），所以用 nil 判断而不是 > 0。
+	// Rate limit parameters may be explicitly set to 0 (rate limiting off), so check
+	// for nil rather than > 0.
 	if p.RateLimitRPS != nil && *p.RateLimitRPS >= 0 {
 		st.RateLimitRPS = *p.RateLimitRPS
 	}
@@ -221,7 +230,8 @@ func (p settingsPatch) apply(st *store.Settings) {
 	if p.KeyConcurrency != nil && *p.KeyConcurrency >= 0 {
 		st.KeyConcurrency = *p.KeyConcurrency
 	}
-	// 签到预算允许显式设成 0（= 默认值），所以用 nil 判断而不是 > 0。
+	// The check-in budget may be explicitly set to 0 (= default), so check for nil
+	// rather than > 0.
 	if p.CheckinBlockMS != nil && *p.CheckinBlockMS >= 0 {
 		st.CheckinBlockMS = *p.CheckinBlockMS
 	}
@@ -244,17 +254,19 @@ func (s *Server) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.persistOrFail(w) {
 		return
 	}
-	// 预算类设置要让已缓存的客户端立刻生效，不能等重启。
+	// Budget-type settings must take effect immediately for already-cached clients,
+	// without waiting for a restart.
 	s.applyRuntimeSettings()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": sanitizedSettings(s.Store.Settings())})
 }
 
-// handleAdminModels 刷新模型目录；GET 返回缓存。
+// handleAdminModels refreshes the model catalog; GET returns the cache.
 func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		// 用 s.catalog() / s.defaultModelID() 而不是 Store 的裸值：
-		// 目录为空时（新装且上游不可达）它们会给出兜底模型，与 /v1/models
-		// 保持一致。否则控制台模型页空白，而 API 还能用默认模型。
+		// Use s.catalog() / s.defaultModelID() rather than the raw Store values: when the
+		// catalog is empty (fresh install with the upstream unreachable) they supply a
+		// fallback model, keeping it consistent with /v1/models. Otherwise the console's
+		// model page would be blank while the API still works with the default model.
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"models":         adminModelViews(registry.List(s.catalog(), s.Store.Settings().ModelAliases)),
 			"default_model":  s.defaultModelID(),
@@ -272,7 +284,7 @@ func (s *Server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// safeKeyList 把密钥列表转成控制台下发的视图（不含完整密钥）。
+// safeKeyList converts the key list into the view sent to the console (without full keys).
 func safeKeyList(keys []*store.APIKey) []map[string]any {
 	out := make([]map[string]any, 0, len(keys))
 	for _, k := range keys {
@@ -284,7 +296,7 @@ func safeKeyList(keys []*store.APIKey) []map[string]any {
 	return out
 }
 
-// mask 对敏感串做脱敏，仅保留首尾片段。
+// mask redacts a sensitive string, keeping only the leading and trailing fragments.
 func mask(s string) string {
 	if len(s) <= 10 {
 		if s == "" {
@@ -295,7 +307,7 @@ func mask(s string) string {
 	return s[:6] + "..." + s[len(s)-4:]
 }
 
-// shortMachine 只展示机器指纹前 12 位。
+// shortMachine shows only the first 12 characters of the machine fingerprint.
 func shortMachine(id string) string {
 	if len(id) <= 12 {
 		return id
@@ -303,9 +315,10 @@ func shortMachine(id string) string {
 	return id[:12]
 }
 
-// maskMachine 返回机器指纹的可读摘要。
+// maskMachine returns a readable summary of a machine fingerprint.
 //
-// 账号级 machine 是原始 UUID，完整值不上控制台（它决定上游怎么发额度）。
+// The account-level machine is a raw UUID; the full value never reaches the console
+// (it determines how the upstream issues quota).
 func maskMachine(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

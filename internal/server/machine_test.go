@@ -13,7 +13,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// postAdmin 以本机来源调用管理接口。
+// postAdmin calls the admin API with a loopback source.
 func postAdmin(t *testing.T, s *Server, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -45,12 +45,12 @@ func TestAssignMachineBackfills(t *testing.T) {
 	if got.MachineID == "" {
 		t.Fatal("缺失机器指纹的账号未被补齐")
 	}
-	// 已有指纹不能被覆盖：那会让该账号在上游的额度归属失效。
+	// An existing fingerprint must not be overwritten: doing so would invalidate that account's quota attribution on the upstream.
 	if after := s.Store.Account("a2"); after.MachineID != "existing-machine-uuid" {
 		t.Fatalf("已有机器指纹被覆盖: %q", after.MachineID)
 	}
 
-	// 再跑一次不应重复分配。
+	// Running it again should not allocate a duplicate.
 	rec = postAdmin(t, s, "/admin/api/accounts", `{"action":"assign-machine"}`)
 	out = decodeJSON[map[string]any](t, rec.Body.Bytes())
 	if out["assigned"].(float64) != 0 {
@@ -77,7 +77,7 @@ func TestAssignMachineSingleAccount(t *testing.T) {
 	}
 }
 
-// 入池时必须给每个账号分配独立机器指纹。
+// When entering the pool, each account must be assigned an independent machine fingerprint.
 func TestEnrollAssignsMachine(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"0","granted":"0"}`)
@@ -100,7 +100,7 @@ func TestEnrollAssignsMachine(t *testing.T) {
 		t.Fatal("入池时应自动分配机器指纹")
 	}
 
-	// 同时必须真的带着这个指纹去问上游要额度。
+	// At the same time, it must actually use this fingerprint to request quota from the upstream.
 	var seen string
 	u2 := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		seen = r.Header.Get(deepai.HeaderMachine)
@@ -150,7 +150,7 @@ func TestStateExposesMachineSummary(t *testing.T) {
 	if with["has_machine"] != true {
 		t.Fatalf("has_machine 应为 true: %#v", with)
 	}
-	// 只下发摘要，完整 UUID 不出网。
+	// Only the digest is issued; the full UUID never leaves the network.
 	if got, _ := with["machine"].(string); got == "" || !strings.HasSuffix(got, "…") {
 		t.Fatalf("机器指纹应脱敏为摘要，实际 %q", got)
 	}
@@ -178,7 +178,7 @@ func TestCheckinProbesAllAccounts(t *testing.T) {
 	}
 	out := decodeJSON[map[string]any](t, rec.Body.Bytes())
 	results, _ := out["results"].([]any)
-	if len(results) != 6 { // 1 个来自 newTestServer + 5 个新增
+	if len(results) != 6 { // 1 from newTestServer + 5 newly added
 		t.Fatalf("探测结果数 = %d，期望 6", len(results))
 	}
 	if got := hits.Load(); got != 6 {
@@ -192,8 +192,8 @@ func TestCheckinProbesAllAccounts(t *testing.T) {
 	}
 }
 
-// 新账号入池时上游常常还没发当日额度（balance=0），几分钟后才有。
-// 入池路径必须安排一次延迟复探，否则这个 0 会被永久缓存、账号被长期跳过。
+// When a new account enters the pool, the upstream often has not yet issued the daily quota (balance=0), and it only becomes available a few minutes later.
+// The pool-entry path must schedule a delayed re-probe; otherwise this 0 will be cached permanently and the account will be skipped for a long time.
 func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	var mu sync.Mutex
 	probes := 0
@@ -209,7 +209,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 		_, _ = io.WriteString(w, `{"enabled":true,"balance":"200.00000","granted":"200.00000"}`)
 	})
 	s, _ := newTestServer(t, u)
-	// 测试里把 3 分钟退避压到 10ms。
+	// In the test, compress the 3-minute backoff to 10ms.
 	s.quotaReprobeDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond}
 
 	rec := postAdmin(t, s, "/admin/api/accounts",
@@ -222,18 +222,18 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 		t.Fatal("入池未返回 id")
 	}
 
-	// 入池瞬间应当是 0（上游如此）。
+	// At the moment of pool entry it should be 0 (that is how the upstream behaves).
 	if a := s.Store.Account(id); a == nil || a.Theos == nil || a.Theos.Balance != "0.00000" {
 		t.Fatalf("入池时应记录上游返回的 0 额度: %#v", a)
 	}
 
-	// 等复探把额度补上。
+	// Wait for the re-probe to fill in the quota.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if a := s.Store.Account(id); a != nil && a.Theos != nil && a.Theos.Balance == "200.00000" {
-			// 额度是复探 goroutine 先写内存、再 Save() 落盘的：只等内存就返回
-			// 会和 t.TempDir() 的清理抢同一批文件（CI 上偶发
-			// "TempDir RemoveAll cleanup: directory not empty"）。
+			// The quota is written to memory by the re-probe goroutine first, then persisted to disk via Save(): waiting only for memory to be set and then returning
+			// will race with t.TempDir() cleanup over the same batch of files (intermittently on CI
+			// "TempDir RemoveAll cleanup: directory not empty").
 			s.waitQuotaReprobe()
 			return // ok
 		}
@@ -243,7 +243,7 @@ func TestEnrollSchedulesQuotaReprobe(t *testing.T) {
 	t.Fatalf("延迟复探未更新额度: %#v", a.Theos)
 }
 
-// 已经拿到额度的账号不应再被安排复探。
+// An account that has already obtained quota should not be scheduled for another re-probe.
 func TestEnrollWithQuotaSkipsReprobe(t *testing.T) {
 	var mu sync.Mutex
 	probes := 0

@@ -10,11 +10,11 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 这组测试覆盖改造前**零覆盖**的 5 个 action：import / manual / remove / toggle /
-// clear-errors。表驱动重构（admin_actions.go）之后，每个 action 的入参结构体
-// 都变了，这里把它们的行为钉住。
+// This set of tests covers 5 actions that had **zero coverage** before the refactor: import / manual / remove / toggle /
+// clear-errors. After the table-driven refactor (admin_actions.go), the input struct for each action
+// changed, so these tests pin down their behavior.
 
-// theosUpstream 返回一个 /theos 有额度的假上游。
+// theosUpstream returns a fake upstream that has quota for /theos.
 func theosUpstream(t *testing.T) *upstream {
 	t.Helper()
 	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +30,7 @@ func theosUpstream(t *testing.T) *upstream {
 func TestAdminActionManualThenToggleClearRemove(t *testing.T) {
 	s, _ := newTestServer(t, theosUpstream(t))
 
-	// manual：新建账号。
+	// manual: create a new account.
 	rec := do(t, s, http.MethodPost, "/admin/api/accounts", "",
 		`{"action":"manual","api_key":"sk-manual-1","name":"手工号","group":"g9"}`)
 	if rec.Code != http.StatusOK {
@@ -55,9 +55,9 @@ func TestAdminActionManualThenToggleClearRemove(t *testing.T) {
 	if !acct.Enabled {
 		t.Fatal("新账号默认应启用")
 	}
-	s.waitQuotaReprobe() // 等异步探活收尾，避免和 TempDir 清理竞争
+	s.waitQuotaReprobe() // Wait for the async liveness probe to finish to avoid racing with TempDir cleanup
 
-	// toggle：启用状态翻转。
+	// toggle: flip the enabled state.
 	if rec := do(t, s, http.MethodPost, "/admin/api/accounts", "",
 		`{"action":"toggle","id":"`+created.ID+`"}`); rec.Code != http.StatusOK {
 		t.Fatalf("toggle = %d", rec.Code)
@@ -70,7 +70,7 @@ func TestAdminActionManualThenToggleClearRemove(t *testing.T) {
 		t.Fatal("toggle 第二次未恢复启用")
 	}
 
-	// clear-errors：清失败计数与错误状态。
+	// clear-errors: clear the failure count and error state.
 	s.Store.UpdateAccount(created.ID, func(a *deepai.Account) {
 		a.Failures = 7
 		a.Status = "error"
@@ -85,7 +85,7 @@ func TestAdminActionManualThenToggleClearRemove(t *testing.T) {
 		t.Fatalf("clear-errors 未清干净: %+v", cleared)
 	}
 
-	// remove：删除存在的账号返回 ok=true，不存在的返回 ok=false。
+	// remove: deleting an existing account returns ok=true, a non-existent one returns ok=false.
 	type okResp struct {
 		OK bool `json:"ok"`
 	}
@@ -128,7 +128,7 @@ func TestAdminActionImportFromDir(t *testing.T) {
 		} `json:"imported"`
 	}
 
-	body := mustMarshal(t, map[string]string{"action": "import", "dir": base}) // Windows 路径含反斜杠，必须走 JSON 编码
+	body := mustMarshal(t, map[string]string{"action": "import", "dir": base}) // Windows paths contain backslashes, so they must go through JSON encoding
 	rec := do(t, s, http.MethodPost, "/admin/api/accounts", "", body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("import = %d：%s", rec.Code, rec.Body.String())
@@ -147,7 +147,7 @@ func TestAdminActionImportFromDir(t *testing.T) {
 		t.Fatalf("导入账号未落库或来源错误: %+v", acct)
 	}
 
-	// 再导一次：同一个 Key 走 Upsert，不是新建。
+	// Import again: the same Key goes through Upsert, not a new create.
 	rec = do(t, s, http.MethodPost, "/admin/api/accounts", "", body)
 	again := decodeJSON[importResp](t, rec.Body.Bytes())
 	if len(again.Imported) != 1 || again.Imported[0].New {
@@ -176,13 +176,13 @@ func TestAdminActionRejectsBadInput(t *testing.T) {
 		}
 	}
 
-	// 未知 action 的错误文案要带上 action 名，便于控制台排错。
+	// The error message for an unknown action must include the action name to make console troubleshooting easier.
 	rec := do(t, s, http.MethodPost, "/admin/api/accounts", "", `{"action":"nope"}`)
 	if !strings.Contains(rec.Body.String(), "未知操作: nope") {
 		t.Fatalf("错误文案未带 action: %s", rec.Body.String())
 	}
 
-	// 只读方法之外的动词应 405。
+	// Verbs other than read-only methods should return 405.
 	if rec := do(t, s, http.MethodPut, "/admin/api/accounts", "", ""); rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("PUT = %d，期望 405", rec.Code)
 	}

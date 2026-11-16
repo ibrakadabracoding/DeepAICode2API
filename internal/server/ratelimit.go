@@ -10,26 +10,26 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// keyIDOf 把密钥映射成限流桶的键。
+// keyIDOf maps a key to the rate-limit bucket key.
 //
-// 用指纹而不是明文：限流器是长期驻留内存的 map，没必要把完整密钥留在里面。
+// Use fingerprint instead of plaintext: the rate limiter is a long-lived in-memory map, so there is no need to keep the full key in it.
 func keyIDOf(key string) string { return deepai.KeyFingerprint(key) }
 
-// --- 数据面：按密钥限流 ---
+// --- Data plane: per-key rate limiting ---
 //
-// 背景：网关对外签发的密钥此前只有「有效 / 无效」两种状态。任何一把密钥都能
-// 把整个号池打满——池里的账号是有限的、上游额度按天发放，一个失控脚本就足以
-// 让所有调用方一起 429。这里补上两道闸门，默认都是关闭的（0 = 不限），
-// 升级不会改变既有行为：
+// Background: keys issued externally by the gateway previously had only two states: valid / invalid. Any single key could
+// exhaust the entire account pool - accounts in the pool are limited, upstream quota is issued daily, and a single runaway script is enough to
+// make all callers hit 429 together. Two gates are added here, both disabled by default (0 = unlimited),
+// upgrading will not change existing behavior:
 //
-//   - 令牌桶限速（每秒请求数 + 突发容量）；
-//   - 单密钥并发上限（在途请求数）。
+// - Token bucket rate limiting (requests per second + burst capacity);
+// - Per-key concurrency limit (in-flight requests).
 //
-// 两者都按「密钥」维度隔离：一个分组 / 一把密钥被限流，不会影响其它密钥。
+// Both are isolated by the "key" dimension: rate limiting one group / one key will not affect other keys.
 
-// keyRateLimiter 是进程内的按密钥限流器。
+// keyRateLimiter is an in-process per-key rate limiter.
 //
-// 不持久化：限流窗口是秒级的，重启清零没有意义，也避免把运行态写进状态文件。
+// Not persisted: the rate-limit window is on the order of seconds, resetting on restart is meaningless, and it avoids writing runtime state into the state file.
 type keyRateLimiter struct {
 	mu       sync.Mutex
 	buckets  map[string]*tokenBucket
@@ -42,15 +42,15 @@ type tokenBucket struct {
 }
 
 const (
-	// keyRateLimiterMaxBuckets 是桶表规模上限：超过后先回收闲置桶再新建。
+	// keyRateLimiterMaxBuckets is the upper limit on bucket table size: once exceeded, idle buckets are reclaimed before creating new ones.
 	//
-	// 桶按密钥指纹索引，密钥轮换 / 删除后旧桶不会被自动引用；不限规模时
-	// 一个长期运行的网关会把这些「历史密钥」的桶一直留在内存里。
+	// Buckets are indexed by key fingerprint; after key rotation / deletion, old buckets will not be automatically referenced; when size is unlimited,
+	// a long-running gateway will keep the buckets of these "historical keys" in memory indefinitely.
 	keyRateLimiterMaxBuckets = 512
-	// keyRateLimiterIdleTTL 是桶的闲置回收时长。
+	// keyRateLimiterIdleTTL is the idle reclaim duration for buckets.
 	//
-	// 比令牌桶填满所需时间长得多：闲置 30 分钟的桶早已回满，直接丢掉等价于
-	// 「重新建一个满桶」，不会给调用方多放请求。
+	// Much longer than the time required to fill a token bucket: a bucket idle for 30 minutes has long since refilled, so dropping it is equivalent to
+	// "creating a new full bucket", and will not let extra requests through for callers.
 	keyRateLimiterIdleTTL = 30 * time.Minute
 )
 
@@ -61,9 +61,9 @@ func newKeyRateLimiter() *keyRateLimiter {
 	}
 }
 
-// allow 按 rps/burst 做令牌桶判定；rps <= 0 表示不限速。
+// allow performs token bucket checks based on rps/burst; rps <= 0 means no rate limiting.
 //
-// 返回 retryAfter 供 429 的 Retry-After 头使用（向上取整到秒，至少 1s）。
+// Returns retryAfter for use in the 429 Retry-After header (rounded up to seconds, at least 1s).
 func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Duration) {
 	if rps <= 0 {
 		return true, 0
@@ -81,14 +81,14 @@ func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Du
 
 	b := l.buckets[id]
 	if b == nil {
-		// 表满时先回收闲置桶（持锁，见 sweepLocked），避免密钥轮换把内存顶大。
+		// When the table is full, reclaim idle buckets first (holding the lock, see sweepLocked) to prevent key rotation from inflating memory.
 		if len(l.buckets) >= keyRateLimiterMaxBuckets {
 			l.sweepLocked(now)
 		}
 		b = &tokenBucket{tokens: float64(burst), last: now}
 		l.buckets[id] = b
 	}
-	// 按经过时间补充令牌，上限为桶容量。
+	// Refill tokens based on elapsed time, capped at the bucket capacity.
 	elapsed := now.Sub(b.last).Seconds()
 	if elapsed > 0 {
 		b.tokens += elapsed * rps
@@ -101,7 +101,7 @@ func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Du
 		b.tokens--
 		return true, 0
 	}
-	// 还差多少秒才能攒够一个令牌。
+	// How many seconds remain until enough tokens accumulate for one token.
 	wait := time.Duration((1 - b.tokens) / rps * float64(time.Second))
 	if wait < time.Second {
 		wait = time.Second
@@ -109,9 +109,9 @@ func (l *keyRateLimiter) allow(id string, rps float64, burst int) (bool, time.Du
 	return false, wait
 }
 
-// sweepLocked 回收长期未用的桶（调用方持锁）。
+// sweepLocked reclaims buckets unused for a long time (caller holds the lock).
 //
-// 有在途请求的桶不回收：它的 tokens/last 还参与着并发限流的判定。
+// Buckets with in-flight requests are not reclaimed: their tokens/last still participate in concurrency rate-limit decisions.
 func (l *keyRateLimiter) sweepLocked(now time.Time) {
 	for id, b := range l.buckets {
 		if now.Sub(b.last) <= keyRateLimiterIdleTTL {
@@ -124,7 +124,7 @@ func (l *keyRateLimiter) sweepLocked(now time.Time) {
 	}
 }
 
-// acquire 尝试占用一个并发名额；limit <= 0 表示不限。
+// acquire attempts to take a concurrency slot; limit <= 0 means unlimited.
 func (l *keyRateLimiter) acquire(id string, limit int) bool {
 	if limit <= 0 {
 		return true
@@ -138,7 +138,7 @@ func (l *keyRateLimiter) acquire(id string, limit int) bool {
 	return true
 }
 
-// release 归还并发名额。
+// release returns the concurrency slot.
 func (l *keyRateLimiter) release(id string, limit int) {
 	if limit <= 0 {
 		return
@@ -152,10 +152,10 @@ func (l *keyRateLimiter) release(id string, limit int) {
 	l.inflight[id]--
 }
 
-// rateLimitGate 对新请求做限流判定，通过后把并发名额的归还在返回时完成。
+// rateLimitGate performs rate-limit checks on new requests; once allowed, the concurrency slot is released when returning.
 //
-// 放在 withAuth 里（校验密钥之后）而不是全局中间件：限流是按密钥隔离的，
-// 没有密钥的请求（未签发密钥的本机自举）不该计入任何人的配额。
+// Place it in withAuth (after key validation) rather than global middleware: rate limiting is isolated per key,
+// Requests without a key (local bootstrap with no issued key) should not count against anyone's quota.
 func (s *Server) rateLimitGate(keyID string) (release func(), ok bool, retryAfter time.Duration) {
 	settings := s.Store.Settings()
 
@@ -169,7 +169,7 @@ func (s *Server) rateLimitGate(keyID string) (release func(), ok bool, retryAfte
 	return func() { s.limiter.release(keyID, limit) }, true, 0
 }
 
-// writeRateLimited 写 429（OpenAI 兼容的 rate_limit_error）。
+// writeRateLimited writes 429 (OpenAI-compatible rate_limit_error).
 func writeRateLimited(w http.ResponseWriter, retryAfter time.Duration) {
 	secs := int(retryAfter.Round(time.Second) / time.Second)
 	if secs < 1 {

@@ -1,21 +1,21 @@
 package server
 
-// 协议转换层（Anthropic / Responses 字段映射、流式块生成、用量解析）已抽到
-// internal/gateway。那一层只依赖标准库与 deepai 协议常量，不碰 HTTP、store
-// 或号池，因此可以脱离网关单独测、单独改。
+// The protocol conversion layer (Anthropic / Responses field mapping, streaming block generation, usage parsing) has been extracted to
+// internal/gateway. That layer depends only on the standard library and the deepai protocol constants, and does not touch HTTP, store
+// or the account pool, so it can be tested and modified independently of the gateway.
 //
-// 这里保留包内短名（类型别名 + 函数变量），让既有 handler 与测试一行都不用改：
-// 迁移是纯搬家，不是行为改动。
+// Package-local short names (type aliases + function variables) are kept here so that existing handlers and tests need no changes at all:
+// The migration is a pure move, not a behavior change.
 //
-// 新增转换逻辑请直接写到 internal/gateway，不要在本文件里加实现。
+// Write new conversion logic directly in internal/gateway; do not add implementations to this file.
 
 import "deepaicode2api/internal/gateway"
 
 type (
-	// Usage 是上游返回的用量（token / 成本）。
+	// Usage is the usage returned by the upstream (token / cost).
 	Usage = gateway.Usage
 
-	// Anthropic 请求模型。
+	// Anthropic request model.
 	anthropicRequest     = gateway.AnthropicRequest
 	anthropicMessage     = gateway.AnthropicMessage
 	anthropicTool        = gateway.AnthropicTool
@@ -23,7 +23,7 @@ type (
 )
 
 var (
-	// 用量解析。
+	// Usage parsing.
 	parseUsage  = gateway.ParseUsage
 	intOf       = gateway.IntOf
 	floatOf     = gateway.FloatOf
@@ -31,10 +31,10 @@ var (
 	strOf       = gateway.StrOf
 	boolOf      = gateway.BoolOf
 
-	// errNoMessages 表示转换后没有可用消息（映射成 400）。
+	// errNoMessages indicates that there are no usable messages after conversion (mapped to 400).
 	errNoMessages = gateway.ErrNoMessages
 
-	// Anthropic ⇄ Chat 映射。
+	// Anthropic ⇄ Chat mapping.
 	firstString              = gateway.FirstString
 	anthropicToChatPayload   = gateway.AnthropicToChatPayload
 	anthropicEffort          = gateway.AnthropicEffort
@@ -49,7 +49,7 @@ var (
 	anthropicTextLen         = gateway.AnthropicTextLen
 	newAnthropicBlockWriter  = gateway.NewAnthropicBlockWriter
 
-	// Responses ⇄ Chat 映射。
+	// Responses ⇄ Chat mapping.
 	responsesReasoningEffort   = gateway.ResponsesReasoningEffort
 	responsesToChatPayload     = gateway.ResponsesToChatPayload
 	responsesInputContent      = gateway.ResponsesInputContent

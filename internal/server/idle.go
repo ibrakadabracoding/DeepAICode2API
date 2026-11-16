@@ -7,41 +7,41 @@ import (
 	"time"
 )
 
-// upstreamIdleTimeout 是上游响应「多久没有新数据就判定为死连接」。
+// upstreamIdleTimeout defines how long an upstream response can go without new data before it is considered a dead connection.
 //
-// 为什么必须有：流式响应的账号槽位（inflight）随 Body 关闭才归还，而流式
-// 可能持续数分钟。上游如果发完首帧后挂住，旧的实现只依赖 r.Context()
-// ——客户端不断开就一直等，槽位与连接被无限占用，且没有任何日志能说明
-// 是“卡住了”还是“还在生成”。
+// Why it is required: the account slot (inflight) for a streaming response is returned only when the Body is closed, while streaming
+// may last several minutes. If the upstream hangs after sending the first frame, the old implementation relied only on r.Context()
+// -if the client never disconnects, it waits forever; the slot and connection are occupied indefinitely, and no log can tell
+// whether it is "stuck" or "still generating".
 //
-// 取 120s 的依据：推理 p50 约 1.1s、长尾 10s 级；深度思考模型首帧可能
-// 十几秒。120s 内一个字节都没有，基本只能是连接已死或上游静默丢包。
+// Basis for choosing 120s: inference p50 is about 1.1s, long tail is on the order of 10s; for deep-thinking models the first frame may
+// take more than ten seconds. If there is not a single byte within 120s, it can basically only be that the connection is dead or the upstream silently dropped packets.
 const upstreamIdleTimeout = 120 * time.Second
 
-// upstreamFirstByteTimeout 是**非流式**响应等待首字节的预算。
+// upstreamFirstByteTimeout is the budget for waiting for the first byte of a **non-streaming** response.
 //
-// 2026-11-13 线上两次 502（125.7s / 131.1s，都是 /v1/responses 非流式）
-// 就是被上面的 120s 误杀的：非流式长思考在首字节前本来就可能超过两分钟，
-// 而请求本身的预算是 request_timeout（默认 600s）。把「等首字节」与
-// 「帧间空闲」分开：首字节最多等 300s，之后仍按 120s 判死。
+// 2026-11-13 two online 502s (125.7s / 131.1s, both /v1/responses non-streaming)
+// were mistakenly killed by the 120s above: a non-streaming long think can naturally exceed two minutes before the first byte,
+// while the request's own budget is request_timeout (default 600s). Separate "waiting for the first byte" from
+// "inter-frame idle": wait at most 300s for the first byte, and after that still judge dead by 120s.
 //
-// 流式保持 120s 不变：SSE 若连首帧都 120s 不给，槽位一直被占着更贵。
+// Streaming remains unchanged at 120s: if SSE does not give even the first frame within 120s, the slot stays occupied, which is more expensive.
 const upstreamFirstByteTimeout = 300 * time.Second
 
-// errUpstreamIdle 是空闲超时后向上层报告的错误。
+// errUpstreamIdle is the error reported to the upper layer after an idle timeout.
 //
-// 单独定义一个值：调用方据此把请求记成 upstream_error 而不是“读到 EOF”，
-// 控制台的 last_err 才能一眼看出是网关主动收尾。
+// Define a separate value: callers use it to record the request as upstream_error instead of "read EOF",
+// so the console's last_err can show at a glance that the gateway actively ended it.
 var errUpstreamIdle = errors.New("上游响应空闲超时（" + upstreamIdleTimeout.String() + " 无数据）")
 
-// idleTimeoutBody 在 d 内没有任何成功读取时关闭底层 Body。
+// idleTimeoutBody closes the underlying Body when there is no successful read within d.
 //
-// 关闭底层 Body 是目前唯一可靠的打断手段：net/http 的响应体没有暴露
-// SetReadDeadline，而 transport 内部正是用「取消 ctx → Close Body」来打断
-// 在途读取的，所以并发 Close 与 Read 是它支持的模式。
+// Closing the underlying Body is currently the only reliable way to interrupt: net/http's response body does not expose
+// SetReadDeadline, and internally transport uses exactly "cancel ctx → Close Body" to interrupt
+// in-flight reads, so concurrent Close and Read is the pattern it supports.
 type idleTimeoutBody struct {
 	rc io.ReadCloser
-	// idle 是拿到首字节之后的帧间空闲预算；first 是首字节预算。
+	// idle is the inter-frame idle budget after receiving the first byte; first is the first-byte budget.
 	idle  time.Duration
 	first time.Duration
 	timer *time.Timer
@@ -51,10 +51,10 @@ type idleTimeoutBody struct {
 	timedOut bool
 }
 
-// newIdleTimeoutBody 包一层空闲超时；idle <= 0 时原样返回 rc。
+// newIdleTimeoutBody wraps an idle timeout; when idle <= 0, return rc as-is.
 //
-// first 是首字节预算（<=0 时取 idle）：非流式请求用它避开「长思考被当成空闲」，
-// 流式传 idle 即可。拿到首字节后统一切回 idle。
+// first is the first-byte budget (falls back to idle when <= 0): non-streaming requests use it to avoid "long thinking being treated as idle",
+// for streaming, just pass idle. After receiving the first byte, switch back to idle uniformly.
 func newIdleTimeoutBody(rc io.ReadCloser, idle, first time.Duration) io.ReadCloser {
 	if rc == nil || idle <= 0 {
 		return rc
@@ -67,7 +67,7 @@ func newIdleTimeoutBody(rc io.ReadCloser, idle, first time.Duration) io.ReadClos
 	return b
 }
 
-// onIdle 由计时器触发：标记超时并关闭底层连接，让阻塞中的 Read 立即返回。
+// onIdle is triggered by the timer: mark the timeout and close the underlying connection so that a blocked Read returns immediately.
 func (b *idleTimeoutBody) onIdle() {
 	b.mu.Lock()
 	if b.closed {
@@ -82,7 +82,7 @@ func (b *idleTimeoutBody) onIdle() {
 func (b *idleTimeoutBody) Read(p []byte) (int, error) {
 	n, err := b.rc.Read(p)
 	if n > 0 {
-		// 首字节之后从 first 切回 idle；已触发超时时连接已被关闭，不复活它。
+		// After the first byte, switch from first back to idle; if the timeout has already fired, the connection has been closed and is not revived.
 		b.mu.Lock()
 		if !b.closed && !b.timedOut {
 			b.timer.Reset(b.idle)
@@ -108,7 +108,7 @@ func (b *idleTimeoutBody) Close() error {
 	return b.rc.Close()
 }
 
-// TimedOut 报告本次读取是否因空闲超时被收尾。
+// TimedOut reports whether this read was terminated due to an idle timeout.
 func (b *idleTimeoutBody) TimedOut() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -10,7 +10,7 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// newEmptyServer 构造一个没有密钥、没有账号的网关（用于鉴权边界测试）。
+// newEmptyServer constructs a gateway with no key and no account (used for authentication boundary tests).
 func newEmptyServer(t *testing.T) *Server {
 	t.Helper()
 	st, err := store.Open(t.TempDir() + "/state.json")
@@ -20,7 +20,7 @@ func newEmptyServer(t *testing.T) *Server {
 	return New(st)
 }
 
-// call 以指定来源地址发请求。
+// call sends a request from the specified origin address.
 func call(t *testing.T, s *Server, remoteAddr string, headers map[string]string, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -33,7 +33,7 @@ func call(t *testing.T, s *Server, remoteAddr string, headers map[string]string,
 	return rec
 }
 
-// 未签发密钥时，本机回环仍可用（自举 / 本地调试）。
+// When no key has been issued, the local loopback is still usable (bootstrap / local debugging).
 func TestAuthWithoutKeysAllowsLoopback(t *testing.T) {
 	s := newEmptyServer(t)
 
@@ -44,7 +44,7 @@ func TestAuthWithoutKeysAllowsLoopback(t *testing.T) {
 	}
 }
 
-// 未签发密钥时，非回环来源必须被拒绝 —— 否则 0.0.0.0 监听就是开放中继。
+// When no key has been issued, non-loopback origins must be rejected - otherwise listening on 0.0.0.0 becomes an open relay.
 func TestAuthWithoutKeysRejectsNonLoopback(t *testing.T) {
 	s := newEmptyServer(t)
 
@@ -59,7 +59,7 @@ func TestAuthWithoutKeysRejectsNonLoopback(t *testing.T) {
 	}
 }
 
-// 一旦签发密钥，非回环来源需要正确的密钥。
+// Once a key is issued, non-loopback origins require the correct key.
 func TestAuthWithKeys(t *testing.T) {
 	s := newEmptyServer(t)
 	key := s.Store.AddKey("k", "").Key
@@ -73,7 +73,7 @@ func TestAuthWithKeys(t *testing.T) {
 	if rec := call(t, s, "192.168.1.10:1", map[string]string{"Authorization": "Bearer " + key}, "/v1/models"); rec.Code != http.StatusOK {
 		t.Fatalf("正确密钥 → %d，期望 200：%s", rec.Code, rec.Body.String())
 	}
-	// x-api-key 同样被接受（Anthropic 客户端习惯）。
+	// x-api-key is also accepted (Anthropic client convention).
 	if rec := call(t, s, "192.168.1.10:1", map[string]string{"x-api-key": key}, "/v1/models"); rec.Code != http.StatusOK {
 		t.Fatalf("x-api-key → %d，期望 200", rec.Code)
 	}
@@ -89,7 +89,7 @@ func TestAuthRejectsDisabledKey(t *testing.T) {
 	}
 }
 
-// 无管理密码时，管理接口只允许本机。
+// When there is no admin password, admin endpoints only allow the local machine.
 func TestAdminAuthLoopbackOnlyWithoutPassword(t *testing.T) {
 	s := newEmptyServer(t)
 
@@ -101,7 +101,7 @@ func TestAdminAuthLoopbackOnlyWithoutPassword(t *testing.T) {
 	}
 }
 
-// 有管理密码时，任何来源都必须带正确密码。
+// When an admin password is set, any origin must supply the correct password.
 func TestAdminAuthRequiresPassword(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.AdminPassword = "secret" })
@@ -120,7 +120,7 @@ func TestAdminAuthRequiresPassword(t *testing.T) {
 	}
 }
 
-// 写操作要做同源校验，阻断 CSRF。
+// Write operations must perform same-origin validation to block CSRF.
 func TestAdminWriteRequiresSameOrigin(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpdateSettings(func(st *store.Settings) { st.AdminPassword = "pw" })
@@ -149,7 +149,7 @@ func TestAdminWriteRequiresSameOrigin(t *testing.T) {
 	}
 }
 
-// CORS 默认只回显本机来源，不回显任意站点。
+// By default, CORS only echoes back the local origin, not arbitrary sites.
 func TestCORSDefaultsToLoopback(t *testing.T) {
 	s := newEmptyServer(t)
 
@@ -172,7 +172,7 @@ func TestCORSDefaultsToLoopback(t *testing.T) {
 	}
 }
 
-// 健康检查不需要密钥（供探活 / 负载均衡使用）。
+// Health checks do not require a key (for liveness probing / load balancing).
 func TestHealthRequiresNoKey(t *testing.T) {
 	s := newEmptyServer(t)
 	for _, p := range []string{"/ping", "/health", "/healthz"} {
@@ -182,7 +182,7 @@ func TestHealthRequiresNoKey(t *testing.T) {
 	}
 }
 
-// 号池为空时给出可读错误，而不是 500。
+// When the account pool is empty, return a readable error instead of a 500.
 func TestNoAccountsError(t *testing.T) {
 	s := newEmptyServer(t)
 	key := s.Store.AddKey("k", "").Key
@@ -192,7 +192,7 @@ func TestNoAccountsError(t *testing.T) {
 		t.Fatalf("/v1/models 不依赖账号，应返回 200，实际 %d", rec.Code)
 	}
 
-	// 推理端点没有账号时应报错（具体状态码由 writeUpstreamErr 决定，但不能 200）。
+	// The inference endpoint should error when there is no account (the specific status code is decided by writeUpstreamErr, but it must not be 200).
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	req.RemoteAddr = "127.0.0.1:1"
@@ -207,7 +207,7 @@ func TestNoAccountsError(t *testing.T) {
 	}
 }
 
-// 确认账号池为空时的错误文案不会泄漏上游细节。
+// Confirm that the error message when the account pool is empty does not leak upstream details.
 func TestErrorMessageDoesNotLeakKey(t *testing.T) {
 	s := newEmptyServer(t)
 	s.Store.UpsertAccount(&deepai.Account{ID: "a", Name: "n", APIKey: "sk-super-secret", Enabled: true})

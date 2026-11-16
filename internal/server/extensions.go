@@ -12,10 +12,10 @@ import (
 	"deepaicode2api/internal/httpx"
 )
 
-// handleTranscriptions 对应 OpenAI /v1/audio/transcriptions。
+// handleTranscriptions corresponds to OpenAI /v1/audio/transcriptions.
 //
-// 上游只接受 audio/webm 与 audio/mp4，字段名为 voiceRecording；
-// 这里保留客户端原始字节与 MIME，仅做字段映射。
+// The upstream only accepts audio/webm and audio/mp4, with the field name voiceRecording;
+// The client's original bytes and MIME are preserved here; only field mapping is performed.
 func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpx.WriteErr(w, http.StatusMethodNotAllowed, "仅支持 POST", "invalid_request_error")
@@ -48,7 +48,7 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	if contentType == "" {
 		contentType = "audio/webm"
 	}
-	// 上游只认真实 MIME 前缀，去掉 codecs 参数。
+	// The upstream only recognizes the real MIME prefix, so the codecs parameter is stripped.
 	if idx := strings.IndexByte(contentType, ';'); idx > 0 {
 		contentType = strings.TrimSpace(contentType[:idx])
 	}
@@ -83,12 +83,12 @@ func (s *Server) handleTranscriptions(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"text": text})
 }
 
-// handleWebSearch 代理上游联网搜索能力。
+// handleWebSearch proxies the upstream web search capability.
 func (s *Server) handleWebSearch(w http.ResponseWriter, r *http.Request) {
 	s.proxyExtension(w, r, deepai.PathWebSearch)
 }
 
-// handleFindService 代理上游服务推荐能力。
+// handleFindService proxies the upstream service recommendation capability.
 func (s *Server) handleFindService(w http.ResponseWriter, r *http.Request) {
 	s.proxyExtension(w, r, deepai.PathFindService)
 }
@@ -142,14 +142,14 @@ func (s *Server) proxyExtension(w http.ResponseWriter, r *http.Request, path str
 	_, _ = io.Copy(w, bytes.NewReader(raw))
 }
 
-// theosCacheTTL 是 /v1/theos 的快照缓存时长。
+// theosCacheTTL is the snapshot cache duration for /v1/theos.
 //
-// /theos 同时是签到通道：面板 / 脚本高频轮询会持续消耗上游按天限流的
-// 「重启签到」次数（403 check_in_refused）。10 分钟内直接回缓存，
-// 需要强制刷新时带 ?force=1。
+// /theos is also the check-in channel: high-frequency polling from the panel / scripts continuously consumes the upstream's daily rate-limited
+// "restart check-in" count (403 check_in_refused). Within 10 minutes, the cache is returned directly;
+// when a forced refresh is needed, pass ?force=1.
 const theosCacheTTL = 10 * time.Minute
 
-// handleTheos 返回当前账号的 Theos 配额（10 分钟内走缓存）。
+// handleTheos returns the Theos quota of the current account (served from cache within 10 minutes).
 func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	key := extractKey(r)
@@ -191,7 +191,7 @@ func (s *Server) handleTheos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleUsage 返回当前账号的订阅 / 用量摘要。
+// handleUsage returns the subscription / usage summary of the current account.
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	key := extractKey(r)

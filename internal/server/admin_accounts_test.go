@@ -16,7 +16,8 @@ type proxyAssignResult struct {
 	Proxies  map[string]int `json:"proxies"`
 }
 
-// 注册代理池轮询分配给号池：默认只补空值，reassign 覆盖，clear 可回滚。
+// Round-robin assignment from the registration proxy pool to the account pool: by
+// default only empty proxies are filled, reassign overwrites, clear rolls back.
 func TestAssignProxyFromPool(t *testing.T) {
 	t.Setenv("PROXY_POOL", "http://127.0.0.1:9001,http://127.0.0.1:9002")
 	s := newEmptyServer(t)
@@ -48,21 +49,21 @@ func TestAssignProxyFromPool(t *testing.T) {
 		t.Fatalf("已有代理不应被覆盖，实际 %q", c.Proxy)
 	}
 
-	// 默认不重复分配。
+	// By default, nothing is reassigned.
 	rec = postAdmin(t, s, "/admin/api/accounts", `{"action":"assign-proxy"}`)
 	out = decodeJSON[proxyAssignResult](t, rec.Body.Bytes())
 	if out.Assigned != 0 {
 		t.Fatalf("重复调用不应再分配，实际 %d", out.Assigned)
 	}
 
-	// reassign 覆盖全部。
+	// reassign overwrites all of them.
 	rec = postAdmin(t, s, "/admin/api/accounts", `{"action":"assign-proxy","reassign":true}`)
 	out = decodeJSON[proxyAssignResult](t, rec.Body.Bytes())
 	if out.Assigned != 3 {
 		t.Fatalf("reassign 应覆盖 3 个，实际 %d", out.Assigned)
 	}
 
-	// clear 回滚。
+	// clear rolls back.
 	rec = postAdmin(t, s, "/admin/api/accounts", `{"action":"assign-proxy","clear":true}`)
 	out = decodeJSON[proxyAssignResult](t, rec.Body.Bytes())
 	if out.Cleared != 3 {
@@ -75,7 +76,8 @@ func TestAssignProxyFromPool(t *testing.T) {
 	}
 }
 
-// 未配置代理池时应给出可执行的提示，而不是静默成功。
+// When no proxy pool is configured, the response should give an actionable hint rather
+// than silently succeeding.
 func TestAssignProxyWithoutPool(t *testing.T) {
 	t.Setenv("PROXY_POOL", "")
 	t.Setenv("DEEPAI_REGISTER_PROXY_POOL", "")

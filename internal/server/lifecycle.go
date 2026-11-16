@@ -8,18 +8,18 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// --- 进程生命周期 ---
+// --- Process lifecycle ---
 
-// Close 停止后台任务并等待已排期的落盘工作收尾。
+// Close stops background tasks and waits for scheduled persist-to-disk work to finish.
 //
-// 为什么需要：配额复探 / 入池探活 / 按需复探都是「先写内存、再 Save()」的
-// goroutine。旧实现里 main 在关掉 HTTP 监听后直接 Save 并退出，后台任务可能
-// 在最后那次 Save 之后才落盘（或被进程杀掉），表现为「刚探到的额度重启就没了」。
+// Why this is needed: quota re-probe / pool-entry liveness probe / on-demand re-probe all follow the pattern of "write memory first, then Save()" in a
+// goroutine. In the old implementation, main called Save and exited directly after shutting down the HTTP listener, so background tasks could
+// persist to disk only after that final Save (or be killed by the process), manifesting as "the quota just probed is gone after restart".
 //
-// 语义：
-//   - 关闭 stopCh，打断后台任务里最长达 12 分钟的退避睡眠；
-//   - 等待 quotaWG（以 ctx 为上限，超时只记日志，不阻塞退出）；
-//   - 关闭各出口的空闲连接，避免进程退出时留下半开连接。
+// Semantics:
+// - Close stopCh to interrupt backoff sleeps of up to 12 minutes in background tasks;
+// - Wait for quotaWG (bounded by ctx; on timeout only log, without blocking exit);
+// - Close idle connections of each egress to avoid leaving half-open connections when the process exits.
 func (s *Server) Close(ctx context.Context) {
 	s.stopOnce.Do(func() {
 		if s.stopCh != nil {
@@ -35,19 +35,19 @@ func (s *Server) Close(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		// 退出流程不能无限等：探测本身有 20s 超时，这里通常不会命中。
+		// The exit flow must not wait indefinitely: probing itself has a 20s timeout, so this is usually not hit.
 		log.Printf("[shutdown] 后台任务未在期限内收尾，继续退出（未落盘的探测结果会丢失）")
 	}
 
 	s.closeIdleConnections()
 }
 
-// stopped 返回停止信号通道（Close 时关闭）。
+// stopped returns the stop signal channel (closed on Close).
 //
-// 可能为 nil（零值 Server，主要出现在测试里），调用方必须容忍。
+// May be nil (zero-value Server, mainly in tests); callers must tolerate it.
 func (s *Server) stopped() <-chan struct{} { return s.stopCh }
 
-// sleepOrStop 等待 d，收到停止信号时返回 false。
+// sleepOrStop waits for d and returns false when the stop signal is received.
 func (s *Server) sleepOrStop(d time.Duration) bool {
 	if d <= 0 {
 		return true
@@ -62,7 +62,7 @@ func (s *Server) sleepOrStop(d time.Duration) bool {
 	}
 }
 
-// closeIdleConnections 关闭所有上游客户端（含各出口代理客户端）的空闲连接。
+// closeIdleConnections closes idle connections of all upstream clients (including each egress proxy client).
 func (s *Server) closeIdleConnections() {
 	closeIdle := func(c *deepai.Client) {
 		if c == nil || c.HTTP == nil {

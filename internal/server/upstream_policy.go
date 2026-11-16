@@ -6,37 +6,37 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// upstreamAction 是一次上游拒绝之后网关应当采取的动作。
+// upstreamAction is the action the gateway should take after an upstream rejection.
 //
-// 把判定从 openModel 的 if 链里抽出来，是为了：
-//   - 让「哪个状态码 / 错误码该换号、该拉黑、该等、该回传」变成可表驱动测试的
-//     纯函数（历史上换号与终态语义改过多次）；
-//   - 新增错误码（例如 2026-11-13 的 theos_exhausted）时只改一处；
-//   - openModel 只剩下「执行动作」，分支不再随错误码增长。
+// The decision was extracted from openModel's if chain to:
+// - make "which status code / error code should switch accounts, block, wait, or return" a table-driven testable
+// pure function (account switching and terminal state semantics have changed many times historically);
+// - when adding a new error code (e.g. theos_exhausted on 2026-11-13), only change one place;
+// - openModel only "executes the action", and branches no longer grow with error codes.
 type upstreamAction int
 
 const (
-	// actRetryOther 换一个账号重试（401/403 普通失败、429、5xx 等）。
+	// actRetryOther retries with another account (ordinary 401/403 failures, 429, 5xx, etc.).
 	actRetryOther upstreamAction = iota
-	// actReturn 直接把上游错误回传给调用方（请求本身的问题 / 缺机器指纹）。
+	// actReturn returns the upstream error directly to the caller (problem with the request itself / missing machine fingerprint).
 	actReturn
-	// actBlockAndRetry 标记 blocked 后换号（邮箱未验证：号本身登录态无效）。
+	// actBlockAndRetry marks blocked then switches accounts (email not verified: the account's login state itself is invalid).
 	actBlockAndRetry
-	// actBlockAndReturn 标记 blocked 后直接回传（账号级策略拦截）。
+	// actBlockAndReturn marks blocked then returns directly (account-level policy interception).
 	actBlockAndReturn
-	// actProbeLane 先探测车道，命中新车道就换道重试。
+	// actProbeLane probes the lane first; if a new lane is hit, switches lanes and retries.
 	actProbeLane
-	// actWaitCapacity 容量拒绝：池里有空号就换号，整池忙才等 Retry-After。
+	// actWaitCapacity capacity rejection: if the pool has an idle account, switch accounts; only wait for Retry-After when the whole pool is busy.
 	actWaitCapacity
-	// actQuotaExhausted 账号当日额度用完：标记到 refresh_at 并换号。
+	// actQuotaExhausted the account's daily quota is used up: mark until refresh_at and switch accounts.
 	actQuotaExhausted
-	// actShapeFallback 请求体形状被拒：补桌面端形状后同号重试一次。
+	// actShapeFallback the request body shape was rejected: add the desktop shape and retry once with the same account.
 	actShapeFallback
 )
 
-// classifyUpstreamError 是纯函数：错误 → 动作。
+// classifyUpstreamError is a pure function: error → action.
 //
-// 判定顺序有意义（先账号终态，再车道/额度/容量，最后才看通用可重试性）。
+// The decision order matters (account terminal state first, then lane/quota/capacity, and only last general retryability).
 func classifyUpstreamError(e *deepai.HTTPError) upstreamAction {
 	switch {
 	case e == nil:
@@ -61,8 +61,8 @@ func classifyUpstreamError(e *deepai.HTTPError) upstreamAction {
 	return actReturn
 }
 
-// quotaExhaustedFallback 是 theos_exhausted 没给 refresh_at 时的恢复等待。
+// quotaExhaustedFallback is the recovery wait when theos_exhausted does not provide refresh_at.
 //
-// 上游文案是 “They refresh at <RFC3339>”，一般都能解析；解析不到时取 6h，
-// 与 check_in_refused 的「Try again tomorrow」同量级。
+// The upstream message is "They refresh at <RFC3339>", which is usually parseable; when it cannot be parsed, use 6h,
+// on the same order as check_in_refused's "Try again tomorrow".
 const quotaExhaustedFallback = 6 * time.Hour

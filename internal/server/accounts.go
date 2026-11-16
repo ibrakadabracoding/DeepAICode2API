@@ -9,16 +9,18 @@ import (
 	"sync"
 )
 
-// maxInFlightPerAccount 是单账号同时进行的上游请求上限。
+// maxInFlightPerAccount is the per-account cap on concurrent upstream requests.
 //
-// 调度只决定「这一轮选到谁」，不保证并发不会集中到少数账号；
-// 实测 12 并发时可能全落在 1~2 个号上，一碰上上游限流就是长尾。
+// Scheduling only decides who gets picked this round; it does not keep concurrency
+// from piling onto a few accounts. Measured with 12 concurrent requests, all of them
+// can land on 1-2 accounts, and any upstream rate limiting produces a long tail.
 const maxInFlightPerAccount = 2
 
-// releaseBody 在响应体关闭时归还账号的在途配额。
+// releaseBody returns the account's in-flight slot when the response body is closed.
 //
-// 所有上游调用点都以 defer resp.Body.Close() 收尾，所以槽位会随 Body 释放：
-// 流式响应可能持续数分钟，不能在建连成功时就归还。
+// Every upstream call site ends with defer resp.Body.Close(), so the slot is released
+// together with the Body: a streaming response can last minutes, so the slot must not
+// be returned as soon as the connection is established.
 type releaseBody struct {
 	io.ReadCloser
 	once    sync.Once
@@ -30,18 +32,23 @@ func (b *releaseBody) Close() error {
 	return b.ReadCloser.Close()
 }
 
-// pickFreeAccount 扫一圈号池，找一个还有在途槽位的账号。
+// pickFreeAccount scans the account pool for an account with a free in-flight slot.
 //
-// 不能用 max_retries 次贪心选号：饱和时几次尝试大概率全撞在忙号上，
-// 于是对外 429 而池里其实还有空槽（docs/performance.md §14）。
-// 返回值第三个标记池里是否有可选账号：区分「全忙」与「没有可调度账号」，
-// 后者要交给 noAccountError 给出可行动的原因（social_login / 未验证…）。
+// It cannot rely on max_retries greedy picks: under saturation those attempts mostly
+// hit busy accounts, so the caller gets a 429 even though the pool still has free
+// slots (docs/performance.md §14). The third return value reports whether the pool has
+// any schedulable account, distinguishing "all busy" from "nothing to schedule"; the
+// latter is left to noAccountError, which supplies an actionable reason
+// (social_login / unverified...).
 //
-// 实现要点：选号在 store 里一次读完（只拷贝被选中的那个），忙号通过纯谓词
-// 排除；acquireAccount 只处理「检查到占用」的窄竞态，失败就排除后重试。
+// Implementation notes: picking reads the store in a single pass (copying only the
+// chosen account), and busy accounts are excluded by a pure predicate; acquireAccount
+// only handles the narrow race between check and acquire, retrying after excluding
+// the account on failure.
 func (s *Server) pickFreeAccount(group string) (*deepai.Account, bool, bool) {
-	// excluded 用切片而不是 map：重试只在「检查与占用撞车」时发生，通常 0~1 次，
-	// 切片比 map 少一次分配，而选号是每个请求一次的热路径。
+	// excluded is a slice rather than a map: retries only happen when check and
+	// acquire collide, typically 0-1 times, so a slice saves one allocation on the
+	// hot path that runs once per request.
 	var excluded []string
 	skip := func(a *deepai.Account) bool {
 		for _, id := range excluded {
@@ -59,19 +66,20 @@ func (s *Server) pickFreeAccount(group string) (*deepai.Account, bool, bool) {
 		if s.acquireAccount(a.ID) {
 			return a, true, true
 		}
-		// 竞态：谓词判定空闲后、占用前被别人抢满。排除它再看下一个。
+		// Race: someone else filled the account between the predicate seeing it idle
+		// and our acquire. Exclude it and look at the next one.
 		excluded = append(excluded, a.ID)
 	}
 }
 
-// accountBusy 报告账号的在途槽位是否已满（纯读，不占用）。
+// accountBusy reports whether the account's in-flight slots are full (read-only, no acquisition).
 func (s *Server) accountBusy(id string) bool {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
 	return s.inflight[id] >= maxInFlightPerAccount
 }
 
-// acquireAccount 尝试占用一个账号的在途槽位；已满时返回 false。
+// acquireAccount tries to take one of the account's in-flight slots; returns false when full.
 func (s *Server) acquireAccount(id string) bool {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
@@ -85,7 +93,7 @@ func (s *Server) acquireAccount(id string) bool {
 	return true
 }
 
-// releaseAccount 归还一个在途槽位。
+// releaseAccount returns one in-flight slot.
 func (s *Server) releaseAccount(id string) {
 	s.inflightMu.Lock()
 	defer s.inflightMu.Unlock()
@@ -99,20 +107,21 @@ func (s *Server) releaseAccount(id string) {
 	}
 }
 
-// hasFreeAccount 报告池里是否还有账号有空在途槽位。
+// hasFreeAccount reports whether any account in the pool has a free in-flight slot.
 //
-// 409 之后用它区分「立即换号」与「整池都满，等一等」：以前一律先
-// sleep(Retry-After) 再换号，最坏白等 30s，还把非流式预算（90s）吃掉。
-// 只做一次指针扫描 + map 查询，不复制整个号池。
+// After a 409 it distinguishes "switch accounts immediately" from "the whole pool is
+// busy, wait": the old code always slept for Retry-After before switching, wasting up
+// to 30s in the worst case and eating into the non-streaming budget (90s). It performs
+// a single pointer scan plus map lookups and does not copy the whole pool.
 func (s *Server) hasFreeAccount() bool {
 	return s.Store.AnySchedulable(func(a *deepai.Account) bool {
 		return !s.accountBusy(a.ID)
 	})
 }
 
-// errAllAccountsBusy 表示所有候选账号都达到了并发上限。
+// errAllAccountsBusy indicates that every candidate account hit its concurrency cap.
 //
-// 用 429 而不是 502：这是可重试的背压，客户端应稍后重试。
+// 429 rather than 502: this is retryable backpressure, and the client should retry later.
 func errAllAccountsBusy() error {
 	return &deepai.HTTPError{
 		Op:     "账号调度",
@@ -121,10 +130,11 @@ func errAllAccountsBusy() error {
 	}
 }
 
-// blockedReason 把上游错误码拼进账号的 last_err。
+// blockedReason appends the upstream error code to the account's last_err.
 //
-// 光存 message 会丢掉 code：全池被拦时要靠它区分 social_login_required /
-// email_unverified，才能给调用方一个能行动的错误。
+// Storing only the message loses the code: when the whole pool is blocked, the code is
+// what distinguishes social_login_required from email_unverified, giving the caller an
+// actionable error.
 func blockedReason(he *deepai.HTTPError) string {
 	if code := he.Code(); code != "" {
 		return code + ": " + he.Error()
@@ -132,10 +142,11 @@ func blockedReason(he *deepai.HTTPError) string {
 	return he.Error()
 }
 
-// noAccountError 在没有可选账号时给出可执行的错误。
+// noAccountError produces an actionable error when no account is selectable.
 //
-// 池里全部账号都被上游要求改用 Google/Apple 登录时，不能只回一句
-// 「全部账号均不可用」——那是运营层面的策略变更，必须让调用方看见原因。
+// When the upstream asks every account in the pool to switch to Google/Apple login, it
+// is not enough to reply "all accounts unavailable" - that is a policy change on the
+// operator side, and the caller must see the reason.
 func (s *Server) noAccountError() error {
 	accts := s.Store.Accounts()
 	if len(accts) == 0 {
@@ -148,7 +159,8 @@ func (s *Server) noAccountError() error {
 		}
 	}
 	if blocked > 0 && blocked == len(accts) {
-		// 全部被拦时要把原因说清楚：只报“全部不可用”会让人以为网关坏了。
+		// When all are blocked, spell out the reason: a bare "all unavailable" makes
+		// people think the gateway is broken.
 		social, unverified := 0, 0
 		for _, a := range accts {
 			switch {

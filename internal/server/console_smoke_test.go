@@ -6,17 +6,22 @@ import (
 	"testing"
 )
 
-// TestConsoleSmoke 跑 scripts/console-smoke.mjs：用极简 DOM 桩把 web/js/*.js
-// 真正执行一遍（import 即触发全部顶层接线），并给四个渲染函数喂固定数据。
+// TestConsoleSmoke runs scripts/console-smoke.mjs: it actually executes
+// web/js/*.js with a minimal DOM stub (importing triggers all top-level wiring) and
+// feeds fixed data to the four render functions.
 //
-// 存在的理由：控制台是纯前端，Go 测试只能断言「字符串存在」。拆模块时最容易
-// 出的是引用类断裂——文件都在、语法都对、`node --check` 也过（它按 CJS 解析，
-// 会放过 ESM 的顶层 return），点一下按钮才炸。本轮拆分中它抓到了三个这种问题：
-//   - app.js 里残留 `lang = …`（模块私有变量被直接赋值）；
-//   - 重复 import 同一个符号；
-//   - 抽屉段删掉 IIFE 外壳后留下顶层 `return`。
+// Why it exists: the console is pure frontend, and Go tests can only assert "the
+// string exists". When splitting modules, the most likely breakage is a reference
+// break - files all present, syntax valid, `node --check` passes too (it parses as
+// CJS, so it lets an ESM top-level return through), and only clicking a button blows
+// up. During this round of splitting it caught three such problems:
+// - a leftover `lang =...` in app.js (a module-private variable assigned directly);
+//   - the same symbol imported twice;
+//   - a top-level `return` left behind after removing the IIFE wrapper from the drawer
+//     section.
 //
-// 未安装 node 时跳过：CI（ubuntu-latest 自带 Node）会真跑，本地按需装。
+// Skipped when node is not installed: CI (ubuntu-latest ships Node) really runs it;
+// install locally as needed.
 func TestConsoleSmoke(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

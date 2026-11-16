@@ -12,17 +12,19 @@ import (
 	"deepaicode2api/internal/store"
 )
 
-// laneProbeCooldown 是两次车道探测之间的最小间隔。
+// laneProbeCooldown is the minimum interval between two lane probes.
 //
-// 车道不对时 426 会成批出现（所有请求同时撞上）；没有冷却，一次车道升级
-// 就会把每个失败请求都变成一次 /models 探测。
+// When the lane is wrong, 426s arrive in batches (all requests hit it at once); without a cooldown,
+// one lane upgrade turns every failed request into a /models probe.
 const laneProbeCooldown = 60 * time.Second
 
-// CurrentLane 返回当前生效的车道。
+// CurrentLane returns the currently effective lane.
 //
-// 探测结果由**当前构建**验证过（LaneBuild == 编译期车道）时无条件信任它，
-// 即使它比编译值旧 —— 上游可能只剩旧车道可用，此时继续发编译值会一直 426。
-// 否则退回 newerLane：状态文件可能来自旧版本，升级后要直接用较新的编译值。
+// When the probe result has been verified by the **current build** (LaneBuild == compile-time lane),
+// trust it unconditionally, even if it is older than the compiled value-the upstream may only have
+// the old lane available, and continuing to send the compiled value would keep returning 426.
+// Otherwise fall back to newerLane: the state file may come from an older version, so after an
+// upgrade the newer compiled value should be used directly.
 func (s *Server) CurrentLane() string {
 	st := s.Store.Settings()
 	lane := strings.TrimSpace(st.Lane)
@@ -32,10 +34,11 @@ func (s *Server) CurrentLane() string {
 	return newerLane(lane)
 }
 
-// newerLane 返回持久化车道值与编译期默认值中较新的一个。
+// newerLane returns the newer of the persisted lane value and the compile-time default.
 //
-// 两边都按十进制整数比较；任一方不是数字时退回编译期默认值，
-// 避免一个手填的怪值把车道卡死（车道不对时上游会回 426，探测会重写它）。
+// Both sides are compared as decimal integers; if either is not a number it falls back to the
+// compile-time default, so a hand-entered odd value can't wedge the lane (a wrong lane makes the
+// upstream return 426, and probing rewrites it).
 func newerLane(stored string) string {
 	stored = strings.TrimSpace(stored)
 	if stored == "" {
@@ -52,13 +55,15 @@ func newerLane(stored string) string {
 	return deepai.LaneVersion
 }
 
-// RefreshLane 探测一次可用车道并落盘，返回最终使用的车道。
+// RefreshLane probes an available lane once and persists it, returning the lane finally used.
 //
-// 探测打 /models（不消耗 Theos、不触发签到），按 deepai.Client 的候选序列
-// （编译期车道优先）试到 2xx 为止 —— 上游抬车道后网关自动跟上，不用改代码。**2026-11-14 起
-// /models 要求 Api-Key**，所以探测要借一个账号的凭据；没有账号时探测器
-// 只会拿到 401，直接跳过探测（编译期 LaneVersion + 426 兜底仍然有效）。
-// 冷却期内直接返回当前值；探测失败时保留旧值并把错误交给调用方。
+// The probe hits /models (consumes no Theos and triggers no check-in), trying the deepai.Client
+// candidate sequence (compiled lane first) until a 2xx-once the upstream raises the lane the gateway
+// follows automatically, with no code change. **As of 2026-11-14 /models requires an Api-Key**, so
+// the probe must borrow an account's credentials; with no account the prober only gets a 401 and
+// skips probing (the compiled LaneVersion + 426 fallback still applies).
+// During cooldown it returns the current value directly; on probe failure it keeps the old value
+// and hands the error to the caller.
 func (s *Server) RefreshLane(ctx context.Context) (string, error) {
 	if strings.TrimSpace(s.Up.Machine) == "" {
 		return s.CurrentLane(), errors.New("缺少机器指纹，无法探测车道")
@@ -87,10 +92,10 @@ func (s *Server) RefreshLane(ctx context.Context) (string, error) {
 	return lane, nil
 }
 
-// applyLane 把车道写回设置与所有已缓存的客户端。
+// applyLane writes the lane back to settings and all cached clients.
 //
-// Client.SetLane 走 atomic，所以这里可以在请求进行中安全地换道；
-// 新建的代理客户端在 clientFor 里会带上当前车道。
+// Client.SetLane uses atomic, so switching lanes while requests are in flight is safe here;
+// newly created proxy clients pick up the current lane in clientFor.
 func (s *Server) applyLane(lane string) {
 	lane = strings.TrimSpace(lane)
 	if lane == "" {

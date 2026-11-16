@@ -13,10 +13,10 @@ import (
 
 var hex16 = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
-// TestRequestIDGeneratedAndEchoed 守住 request id 中间件。
+// TestRequestIDGeneratedAndEchoed guards the request id middleware.
 //
-// 这条能力此前只存在于 CORS 的 Expose-Headers 声明里（声明了却从不生成），
-// 日志与响应因此无法互相对上。
+// This capability previously existed only in the CORS Expose-Headers declaration (declared but never generated),
+// so logs and responses could not be correlated.
 func TestRequestIDGeneratedAndEchoed(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 
@@ -25,7 +25,7 @@ func TestRequestIDGeneratedAndEchoed(t *testing.T) {
 		t.Fatalf("应生成 16 位 hex request id，实际 %q", got)
 	}
 
-	// 合法传入值原样回显（便于跨服务串联）。
+	// A valid incoming value is echoed back as-is (for cross-service tracing).
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Request-Id", "trace-abc_123")
@@ -35,7 +35,7 @@ func TestRequestIDGeneratedAndEchoed(t *testing.T) {
 		t.Fatalf("合法 request id 应回显，实际 %q", got)
 	}
 
-	// 非法传入值必须被替换（避免日志注入 / 头污染）。
+	// An invalid incoming value must be replaced (to avoid log injection / header pollution).
 	req3 := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	req3.RemoteAddr = "127.0.0.1:1234"
 	req3.Header.Set("X-Request-Id", "bad id\nwith newline")
@@ -46,10 +46,10 @@ func TestRequestIDGeneratedAndEchoed(t *testing.T) {
 	}
 }
 
-// TestMetricsEndpoint 验证 /metrics 的格式与鉴权。
+// TestMetricsEndpoint verifies the format and authentication of /metrics.
 func TestMetricsEndpoint(t *testing.T) {
 	s, _ := newTestServer(t, nil)
-	do(t, s, http.MethodGet, "/health", "", "") // 造一条请求计数
+	do(t, s, http.MethodGet, "/health", "", "") // Generate one request count
 
 	rec := do(t, s, http.MethodGet, "/metrics", "", "")
 	if rec.Code != http.StatusOK {
@@ -76,7 +76,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	}
 }
 
-// TestGzipCompressesJSON 验证 JSON 响应会被压缩且内容可还原。
+// TestGzipCompressesJSON verifies that JSON responses are compressed and the content is recoverable.
 func TestGzipCompressesJSON(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 
@@ -108,7 +108,7 @@ func TestGzipCompressesJSON(t *testing.T) {
 	}
 }
 
-// TestGzipSkipsSSE 验证流式响应不压缩（逐帧 flush 语义不能破坏）。
+// TestGzipSkipsSSE verifies that streaming responses are not compressed (per-frame flush semantics must not be broken).
 func TestGzipSkipsSSE(t *testing.T) {
 	h := httpx.WithGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -128,10 +128,10 @@ func TestGzipSkipsSSE(t *testing.T) {
 	}
 }
 
-// TestGzipSkipsBodylessStatus 验证 304/204 不会被套上 Content-Encoding。
+// TestGzipSkipsBodylessStatus verifies that 304/204 are not given a Content-Encoding.
 //
-// 资产命中 ETag 回 304 时最容易踩：304 没有响应体，带上 gzip 头会让代理
-// 与部分客户端把空体当成压缩流解析。
+// The easiest pitfall is when an asset hits ETag and returns 304: a 304 has no response body, and including a gzip header makes proxies
+// and some clients parse the empty body as a compressed stream.
 func TestGzipSkipsBodylessStatus(t *testing.T) {
 	for _, code := range []int{http.StatusNotModified, http.StatusNoContent} {
 		h := httpx.WithGzip(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +151,7 @@ func TestGzipSkipsBodylessStatus(t *testing.T) {
 	}
 }
 
-// TestGzipHonorsQZero 验证 gzip;q=0 被尊重（客户端明确拒绝）。
+// TestGzipHonorsQZero verifies that gzip;q=0 is honored (the client explicitly refuses it).
 func TestGzipHonorsQZero(t *testing.T) {
 	if httpx.AcceptsGzip(reqWithEncoding("gzip;q=0")) {
 		t.Fatal("gzip;q=0 应视为拒绝")
