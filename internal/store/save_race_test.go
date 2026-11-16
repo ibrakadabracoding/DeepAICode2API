@@ -11,18 +11,21 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 并发 Save 必须保证落盘文件始终是完整合法的状态文件。
+// Concurrent Save must guarantee that the persisted file is always a complete,
+// valid state file.
 //
-// 真实触发路径：批量入池后每个账号起一个复探 goroutine（scheduleQuotaReprobe），
-// 它们在同一时刻醒来并各自调用 Save()；同时后台还有 30s 周期保存、
-// 管理接口的增删改也各自 Save。
+// Real trigger path: after a batch of accounts is added, each account gets a
+// re-probe goroutine (scheduleQuotaReprobe); they wake at the same time and each
+// calls Save(), while the background 30s periodic save and the admin API's
+// create/update/delete operations also call Save.
 func TestConcurrentSaveKeepsFileValid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	// 先塞入足够多的账号，让单次序列化体足够大，更容易撞上临时文件竞争。
+	// Seed enough accounts first so a single serialization is large enough to
+	// make temp-file contention more likely.
 	for i := 0; i < 200; i++ {
 		st.UpsertAccount(&deepai.Account{
 			ID: fmt.Sprintf("seed-%03d", i), APIKey: fmt.Sprintf("sk-seed-%03d", i),
@@ -66,7 +69,7 @@ func TestConcurrentSaveKeepsFileValid(t *testing.T) {
 		t.Fatalf("并发 Save 后状态文件不是合法 JSON（%d 字节）", len(raw))
 	}
 
-	// 还应能被正常重新载入，且账号不丢。
+	// It should also reload normally without losing accounts.
 	back, err := Open(path)
 	if err != nil {
 		t.Fatalf("重新打开失败: %v", err)
@@ -76,7 +79,8 @@ func TestConcurrentSaveKeepsFileValid(t *testing.T) {
 	}
 }
 
-// 同一路径的两个 Store 实例（比如误起了两个网关）也不应写坏文件。
+// Two Store instances on the same path (e.g. two gateways started by mistake)
+// must also not corrupt the file.
 func TestConcurrentSaveAcrossInstances(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	a, err := Open(path)

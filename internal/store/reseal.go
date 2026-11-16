@@ -8,27 +8,31 @@ import (
 	"os"
 )
 
-// ResealReport 描述一次存量明文封存的结果。
+// ResealReport describes the result of sealing existing plaintext data.
 type ResealReport struct {
-	// Files 是实际被重写的文件（不存在则跳过）。
+	// Files are the files actually rewritten (missing files are skipped).
 	Files []string
-	// SealedLines 是被转成密文的历史明文日志行数。
+	// SealedLines is the number of historical plaintext log lines converted to ciphertext.
 	SealedLines int
-	// KeptLines 是无法解析、原样保留的行数（不解密也不丢数据）。
+	// KeptLines is the number of unparseable lines kept as-is (neither decrypted nor discarded).
 	KeptLines int
-	// Accounts 是主文件里的账号数，用于校对没有写出空池。
+	// Accounts is the number of accounts in the main file, used to check that an empty pool was not written.
 	Accounts int
 }
 
-// Reseal 把主文件、统计旁路与日志中的存量明文一并封存为当前主密钥的密文。
+// Reseal seals existing plaintext in the main file, the stats side file, and
+// the logs with the current master key.
 //
-// 为什么需要它：启用加密只影响「之后写入」的数据。主文件与统计在下次
-// Save 时会整体重写为 v2，但请求日志是 append-only 的——历史明文行不会
-// 因为配置了主密钥就消失（decodeLine 兼容混合格式，读取时也不会报错）。
-// 只靠"设个环境变量"会留下长期明文痕迹，所以这里显式重写。
+// Why it is needed: enabling encryption only affects data written afterwards.
+// The main file and stats are fully rewritten as v2 on the next Save, but the
+// request log is append-only - historical plaintext lines do not disappear just
+// because a master key is configured (decodeLine tolerates mixed formats, so
+// reads do not error either). Merely setting an environment variable would
+// leave long-lived plaintext traces, so this explicitly rewrites them.
 //
-// 幂等：已加密的行原样保留（但会用同一把钥匙校验，密钥错配立即报错）。
-// 要求先停止正在运行的网关：本方法会 rename 主文件与日志文件。
+// Idempotent: already encrypted lines are kept as-is (but verified with the
+// same key, so a key mismatch fails immediately). Requires stopping the running
+// gateway first: this method renames the main file and the log file.
 func (s *Store) Reseal() (ResealReport, error) {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
@@ -76,7 +80,8 @@ func (s *Store) Reseal() (ResealReport, error) {
 		rep.Files = append(rep.Files, s.logsPath)
 	}
 
-	// 轮转文件（<logs>.1）同样可能有明文，一并处理；不存在则跳过。
+	// Rotated files (<logs>.1) may also contain plaintext; handle them too and
+	// skip if missing.
 	rotated := s.logsPath + ".1"
 	if c, k, existed, err := resealLogFile(rotated, key); err != nil {
 		return rep, err
@@ -108,7 +113,8 @@ func (s *Store) Reseal() (ResealReport, error) {
 	return rep, nil
 }
 
-// reseal 重写日志文件并把文件大小同步回内存（轮转判定用）。
+// reseal rewrites the log file and syncs the file size back into memory (used
+// for rotation checks).
 func (l *logStore) reseal(key []byte) (converted, kept int, err error) {
 	if l == nil {
 		return 0, 0, nil
@@ -127,11 +133,14 @@ func (l *logStore) reseal(key []byte) (converted, kept int, err error) {
 	return converted, kept, nil
 }
 
-// resealLogFile 逐行把 JSONL 里的明文封存；existed 表示文件是否存在。
+// resealLogFile seals plaintext lines in a JSONL file one by one; existed
+// indicates whether the file exists.
 //
-// 无法解析成 JSON 的行原样保留：宁可留一行坏数据，也不能因为格式噪声
-// 把排障日志整段丢掉。已加密的行会先用同一把钥匙解开校验，避免密钥错配
-// 后"看起来封存成功、实际打不开"。
+// Lines that cannot be parsed as JSON are kept as-is: better to keep one bad
+// line than to drop an entire block of troubleshooting logs due to format
+// noise. Already encrypted lines are first decrypted and verified with the same
+// key, avoiding the "looks sealed but cannot be opened" situation after a key
+// mismatch.
 func resealLogFile(path string, key []byte) (converted, kept int, existed bool, err error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -172,14 +181,16 @@ func resealLogFile(path string, key []byte) (converted, kept int, existed bool, 
 		converted++
 	}
 
-	// 密钥为 nil 时 writeAtomicSealed 只做原子写，不再二次封存。
+	// When the key is nil, writeAtomicSealed only performs the atomic write and
+	// does not seal again.
 	if err := writeAtomicSealed(path, out.Bytes(), nil); err != nil {
 		return converted, kept, true, err
 	}
 	return converted, kept, true, nil
 }
 
-// verifySealedStateFile 校验主/统计这类整文件 JSON：必须是可用当前钥匙解开的信封。
+// verifySealedStateFile verifies whole-file JSON such as the main/stats files:
+// it must be an envelope decryptable with the current key.
 func verifySealedStateFile(path string, key []byte) error {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -197,7 +208,7 @@ func verifySealedStateFile(path string, key []byte) error {
 	return nil
 }
 
-// verifySealedLogFile 校验 JSONL：每一行都必须是信封。
+// verifySealedLogFile verifies a JSONL file: every line must be an envelope.
 func verifySealedLogFile(path string) error {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

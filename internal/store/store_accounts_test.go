@@ -9,12 +9,14 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// LockAccountProbe 只加探测冷却与备注：不改状态、不累加失败次数。
+// LockAccountProbe only sets the probe cooldown and a note: it does not change
+// status or increment the failure count.
 //
-// check_in_refused 这类错误下账号仍可推理（只是落在替身模型分支），
-// 标成 error 虽然不影响调度（调度器只跳过 blocked），但会污染健康度展示；
-// 真正要防的是后台守护每 5 分钟又来磕一次 403 —— 即复探风暴
-// （docs/performance.md §14）。
+// With errors like check_in_refused the account can still run inference (it just
+// falls into the substitute-model branch); marking it as error would not affect
+// scheduling (the scheduler only skips blocked) but would pollute the health
+// display. What really needs preventing is the background guardian hitting 403
+// again every 5 minutes - i.e. a re-probe storm (docs/performance.md §14).
 func TestLockAccountProbeKeepsStatus(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true, Status: "ok"})
@@ -44,7 +46,7 @@ func TestLockAccountProbeKeepsStatus(t *testing.T) {
 	}
 }
 
-// 已有更长的冷却时，短锁不能把它缩短。
+// When a longer cooldown already exists, a shorter lock must not shorten it.
 func TestLockAccountProbeKeepsLongerCooldown(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
@@ -56,7 +58,7 @@ func TestLockAccountProbeKeepsLongerCooldown(t *testing.T) {
 	}
 }
 
-// 未知账号不 panic、不产生副作用。
+// An unknown account must not panic or produce side effects.
 func TestLockAccountProbeUnknown(t *testing.T) {
 	st := newStore(t)
 	st.LockAccountProbe("nope", time.Now().Add(time.Hour), "x")
@@ -65,7 +67,7 @@ func TestLockAccountProbeUnknown(t *testing.T) {
 	}
 }
 
-// 探测失败按次退避 2m → 10m → 1h，成功即清零。
+// Probe failures back off per attempt: 2m → 10m → 1h, cleared on success.
 func TestProbeCooldownBackoff(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})
@@ -90,10 +92,11 @@ func TestProbeCooldownBackoff(t *testing.T) {
 	}
 }
 
-// RecordProbeFailure 只推进探测退避：线上热路径的按需复探失败时，
-// 不能把号标坏（Status/Failures 原样），但必须让 ProbeAfter 前进，
-// 否则 quotaNeedsRefresh 永远 true，每个选中该号的请求都会再探一次
-// （docs/changes.md §61：同一账号 323 次/小时）。
+// RecordProbeFailure only advances the probe backoff: when an on-demand re-probe
+// on the online hot path fails, the account must not be marked bad (Status/Failures
+// stay as-is), but ProbeAfter must move forward, otherwise quotaNeedsRefresh is
+// always true and every request that selects the account probes again
+// (docs/changes.md §61: the same account 323 times/hour).
 func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{
@@ -118,7 +121,7 @@ func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 		t.Fatal("额度快照不应被清掉")
 	}
 
-	// 第二次失败要拉长到 10 分钟，第三次封顶 1 小时。
+	// The second failure should extend to 10 minutes, and the third caps at 1 hour.
 	for i, want := range []time.Duration{10 * time.Minute, time.Hour} {
 		st.RecordProbeFailure("a1")
 		a = st.Accounts()[0]
@@ -128,7 +131,7 @@ func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 		}
 	}
 
-	// 探测成功（任何写入额度的路径）都要把退避清零。
+	// A successful probe (any path that writes the allowance) must clear the backoff.
 	st.SetAccountAllowance("a1", &deepai.Allowance{Enabled: true}, nil)
 	a = st.Accounts()[0]
 	if a.ProbeAfter != 0 || a.ProbeFailures != 0 {
@@ -136,7 +139,7 @@ func TestRecordProbeFailureBacksOffOnlyProbe(t *testing.T) {
 	}
 }
 
-// 未知账号不 panic、不影响其它账号。
+// An unknown account must not panic or affect other accounts.
 func TestRecordProbeFailureUnknownAccount(t *testing.T) {
 	st := newStore(t)
 	st.UpsertAccount(&deepai.Account{ID: "a1", APIKey: "k1", Enabled: true})

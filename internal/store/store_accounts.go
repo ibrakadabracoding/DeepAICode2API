@@ -11,9 +11,9 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// --- 账号 ---
+// --- Account ---
 
-// Accounts 返回账号快照列表（每项都是深拷贝）。
+// Accounts returns a list of account snapshots (each item is a deep copy).
 func (s *Store) Accounts() []*deepai.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -24,11 +24,11 @@ func (s *Store) Accounts() []*deepai.Account {
 	return out
 }
 
-// Account 按 ID 查找账号，返回深拷贝快照。
+// Account looks up an account by ID and returns a deep-copy snapshot.
 //
-// 不返回号池里的活指针：账号状态会被调度、后台探测、管理接口并发改写，
-// 把活指针交出去等于把加锁责任推给每个调用方。需要就地改字段时用
-// UpdateAccount / UpdateAccounts（在写锁内完成）。
+// Does not return live pointers from the account pool: account state is concurrently modified by scheduling, background probing, and management APIs,
+// handing out live pointers is equivalent to pushing locking responsibility onto every caller. When fields need to be modified in place, use
+// UpdateAccount / UpdateAccounts (completed under the write lock).
 func (s *Store) Account(id string) *deepai.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -40,20 +40,20 @@ func (s *Store) Account(id string) *deepai.Account {
 	return nil
 }
 
-// AccountPage 是一次账号分页查询的结果。
+// AccountPage is the result of a paginated account query.
 type AccountPage struct {
 	Items []*deepai.Account
-	Total int // 过滤后的总数（未分页）
+	Total int // Total count after filtering (unpaginated)
 }
 
-// AccountCounts 返回账号总数与就绪数，不解包快照。
+// AccountCounts returns the total account count and ready count without unpacking snapshots.
 //
-// 控制台首屏需要在不同步整个账号列表的情况下展示“就绪/总”，
-// 而 Accounts() 会给每个账号做深拷贝。
+// The console's first screen needs to display "ready/total" without syncing the entire account list,
+// whereas Accounts() deep-copies every account.
 //
-// “就绪”的口径见 deepai.AccountReady：error 只在错误还算新鲜时算不健康，
-// blocked 永不算就绪（它不会自愈）。旧实现用的 `status != "error"` 会把
-// 一次概率性 EOF 永久计成不健康，也会把 blocked 算成就绪。
+// For the definition of "ready", see deepai.AccountReady: error is considered unhealthy only while the error is still fresh,
+// blocked is never considered ready (it will not self-heal). The old implementation's `status != "error"` would
+// permanently count a probabilistic EOF as unhealthy, and would also count blocked as ready.
 func (s *Store) AccountCounts() (total, ready int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -66,30 +66,30 @@ func (s *Store) AccountCounts() (total, ready int) {
 	return len(s.st.Accounts), ready
 }
 
-// AccountQuery 描述一次账号列表查询。
+// AccountQuery describes an account list query.
 type AccountQuery struct {
 	Offset int
 	Limit  int
 	Group  string
 	Status string
 	Query  string
-	// Sort 取 account / group / source / plan / theos / status / failures / last_used；
-	// 空串表示保持号池原顺序。
+	// Sort takes account / group / source / plan / theos / status / failures / last_used;
+	// An empty string means keep the original account pool order.
 	Sort string
-	// Desc 为 true 时降序。
+	// Desc true means descending order.
 	Desc bool
 }
 
-// AccountPage 按条件过滤、排序后分页返回账号快照。
+// AccountPage filters by conditions, sorts, and then returns paginated account snapshots.
 //
-// 控制台一屏只渲染几十行，而全量账号快照动辄几百 KB；
-// 分页把传输量从 O(全部账号) 降到 O(单页)。
+// The console renders only a few dozen rows per screen, while a full account snapshot is often hundreds of KB;
+// Pagination reduces the transfer volume from O(all accounts) to O(single page).
 //
-// 排序必须在这里做而不是前端：列表是服务端分页的，只排当前页会得到
-// 错误结果（第 2 页的第一条可能比第 1 页的最后一条还小）。
-// 相等值统一按 ID 兜底，保证翻页时条目不会在页之间跳动。
+// Sorting must be done here rather than on the frontend: the list is server-side paginated, so sorting only the current page will produce
+// incorrect results (the first item on page 2 may be smaller than the last item on page 1).
+// Equal values uniformly fall back to ID, ensuring entries do not jump between pages when paginating.
 //
-// offset<0 视为 0；limit<=0 用默认 50；limit>200 封顶 200。
+// offset<0 is treated as 0; limit<=0 uses the default 50; limit>200 is capped at 200.
 func (s *Store) AccountPage(q AccountQuery) AccountPage {
 	offset := q.Offset
 	limit := q.Limit
@@ -140,7 +140,7 @@ func (s *Store) AccountPage(q AccountQuery) AccountPage {
 	return AccountPage{Items: items, Total: total}
 }
 
-// sortAccounts 按指定字段排序；未知字段保持原顺序。
+// sortAccounts sorts by the specified field; unknown fields keep the original order.
 func sortAccounts(xs []*deepai.Account, key string, desc bool) {
 	key = strings.ToLower(strings.TrimSpace(key))
 	if key == "" || len(xs) < 2 {
@@ -153,7 +153,7 @@ func sortAccounts(xs []*deepai.Account, key string, desc bool) {
 	sort.SliceStable(xs, func(i, j int) bool {
 		c := cmp(xs[i], xs[j])
 		if c == 0 {
-			return xs[i].ID < xs[j].ID // 稳定兜底
+			return xs[i].ID < xs[j].ID // Stable fallback
 		}
 		if desc {
 			return c > 0
@@ -162,7 +162,7 @@ func sortAccounts(xs []*deepai.Account, key string, desc bool) {
 	})
 }
 
-// accountComparator 返回某字段的升序比较函数；未知字段返回 ok=false。
+// accountComparator returns an ascending comparison function for a field; for unknown fields it returns ok=false.
 func accountComparator(key string) (func(a, b *deepai.Account) int, bool) {
 	cmpStr := func(a, b string) int { return strings.Compare(a, b) }
 	cmpInt := func(a, b int64) int {
@@ -198,7 +198,7 @@ func accountComparator(key string) (func(a, b *deepai.Account) int, bool) {
 	return nil, false
 }
 
-// accountLabel 是账号的展示名（优先邮箱，其次名称，最后 ID）。
+// accountLabel is the display name of an account (email first, then name, and finally ID).
 func accountLabel(a *deepai.Account) string {
 	if a == nil {
 		return ""
@@ -213,7 +213,7 @@ func accountLabel(a *deepai.Account) string {
 	}
 }
 
-// accountPlanLabel 是套餐的展示名（与前端一致）。
+// accountPlanLabel is the display name of the plan (consistent with the frontend).
 func accountPlanLabel(a *deepai.Account) string {
 	if a == nil {
 		return ""
@@ -227,7 +227,7 @@ func accountPlanLabel(a *deepai.Account) string {
 	return "free"
 }
 
-// quotaValue 把 Theos 余额解析成数值；未知/解析不了按 -1（排在最前，升序）。
+// quotaValue parses the Theos balance into a numeric value; unknown/unparseable values are treated as -1 (sorted first in ascending order).
 func quotaValue(a *deepai.Account) int64 {
 	if a == nil || a.Theos == nil {
 		return -1
@@ -236,10 +236,10 @@ func quotaValue(a *deepai.Account) int64 {
 	if err != nil {
 		return -1
 	}
-	return int64(v * 1000) // 保留 3 位小数，避免浮点在比较里的抖动
+	return int64(v * 1000) // Keep 3 decimal places to avoid floating-point jitter in comparisons
 }
 
-// accountMatches 在 ID / 名称 / 邮箱 / 用户名 / 分组 / 代理上做子串匹配。
+// accountMatches performs substring matching on ID / name / email / username / group / proxy.
 func accountMatches(a *deepai.Account, kw string) bool {
 	for _, field := range []string{a.ID, a.Name, a.Email, a.Username, a.GroupName(), a.Proxy, a.Fingerprint} {
 		if strings.Contains(strings.ToLower(field), kw) {
@@ -249,7 +249,7 @@ func accountMatches(a *deepai.Account, kw string) bool {
 	return false
 }
 
-// UpdateAccount 在写锁内就地修改一个账号；返回账号是否存在。
+// UpdateAccount modifies an account in place under the write lock; returns whether the account exists.
 func (s *Store) UpdateAccount(id string, fn func(*deepai.Account)) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,9 +262,9 @@ func (s *Store) UpdateAccount(id string, fn func(*deepai.Account)) bool {
 	return false
 }
 
-// UpdateAccounts 在写锁内批量遍历全部账号。
+// UpdateAccounts iterates over all accounts in bulk under the write lock.
 //
-// fn 返回 true 表示本次改动了该账号；返回值为改动个数。
+// fn returning true means the account was modified this time; the return value is the number of modifications.
 func (s *Store) UpdateAccounts(fn func(*deepai.Account) bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -277,10 +277,10 @@ func (s *Store) UpdateAccounts(fn func(*deepai.Account) bool) int {
 	return n
 }
 
-// UpsertAccount 按 API Key 指纹或邮箱去重后写入账号，返回是否为新增。
+// UpsertAccount deduplicates by API Key fingerprint or email before writing the account, and returns whether it was newly added.
 //
-// 同一账号重新登录时 API Key 可能不变，但重新注册/补跑时邮箱相同、
-// Key 可能已轮换；按邮箱二次匹配可以避免号池里出现同一账号两份。
+// When the same account logs in again, the API Key may remain unchanged, but when re-registering/re-running, the email is the same,
+// the Key may have been rotated; secondary matching by email prevents the same account from appearing twice in the account pool.
 func (s *Store) UpsertAccount(a *deepai.Account) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,7 +289,7 @@ func (s *Store) UpsertAccount(a *deepai.Account) bool {
 			continue
 		}
 		a.ID = ex.ID
-		// 运行态以旧值优先，身份字段以新值优先（空值回落）——见 MergeFrom。
+		// Runtime state prefers the old value, while identity fields prefer the new value (falling back on empty values) - see MergeFrom.
 		a.MergeFrom(ex)
 		s.st.Accounts[i] = a.Clone()
 		return false
@@ -303,7 +303,7 @@ func sameEmail(a, b string) bool {
 	return a != "" && b != "" && strings.EqualFold(a, b)
 }
 
-// RemoveAccount 删除账号。
+// RemoveAccount deletes an account.
 func (s *Store) RemoveAccount(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,18 +316,18 @@ func (s *Store) RemoveAccount(id string) bool {
 	return false
 }
 
-// PickAccount 在指定分组内以轮询方式挑一个可用账号。
+// PickAccount selects an available account within the specified group using rotation.
 //
-// 调度规则（分组 / 额度 / 失败加权 / 轮询）仍在 internal/pool；这里只负责
-// 「一次读锁 + 一次扫描」。
+// Scheduling rules (group / quota / failure weighting / rotation) still live in internal/pool; this only handles
+// one read lock + one scan.
 //
-// 每个请求一次的热路径：这里只做一次读锁 + 一次扫描，**只深拷贝被选中的账号**。
-// 旧版由调用方循环 "Accounts()（全池深拷贝）+ NextAccountGroup（写锁 + 再拷贝）"
-// 实现，653 个号时是 O(n²) 次拷贝、每轮一次写锁。
+// Hot path once per request: this performs only one read lock + one scan, and **deep-copies only the selected account**.
+// The old version had the caller loop over "Accounts() (deep copy of the entire pool) + NextAccountGroup (write lock + another copy)"
+// implementation; with 653 accounts it was O(n²) copies and one write lock per round.
 //
-// skip 为可选的临时排除谓词（如“并发槽位已满”），必须是纯函数。
-// 返回值第二个标记“池里是否有可调度账号（忽略 skip）”，
-// 供调用方区分“全忙”与“根本没号”。
+// skip is an optional temporary exclusion predicate (e.g. "concurrency slots full") and must be a pure function.
+// The second return flag indicates "whether the pool has any schedulable account (ignoring skip)",
+// so the caller can distinguish "all busy" from "no accounts at all".
 func (s *Store) PickAccount(group string, skip func(*deepai.Account) bool) (*deepai.Account, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -338,8 +338,8 @@ func (s *Store) PickAccount(group string, skip func(*deepai.Account) bool) (*dee
 	return acct.Clone(), true
 }
 
-// AnySchedulable 报告是否存在满足 ok 的可调度账号（启用、未被拦截），
-// 不解包快照、不深拷贝。
+// AnySchedulable reports whether there is a schedulable account satisfying ok (enabled, not blocked),
+// without unpacking the snapshot or deep-copying.
 func (s *Store) AnySchedulable(ok func(*deepai.Account) bool) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -354,7 +354,7 @@ func (s *Store) AnySchedulable(ok func(*deepai.Account) bool) bool {
 	return false
 }
 
-// NextAccountGroup 兼容旧调用点：等价于 PickAccount(group, nil) 的成功分支。
+// NextAccountGroup is compatible with old call sites: equivalent to the success branch of PickAccount(group, nil).
 func (s *Store) NextAccountGroup(group string) *deepai.Account {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -365,26 +365,26 @@ func (s *Store) NextAccountGroup(group string) *deepai.Account {
 	return acct.Clone()
 }
 
-// MarkAccountResult 记录一次账号调用结果。
+// MarkAccountResult records the result of one account call.
 //
-// 失败时是否把账号标成 error 由瞬时判定决定（见 MarkAccountFailure）：
-// 这个入口保留给“已经确定要记成失败”的调用方（例如不带错误对象的场合）。
+// Whether to mark the account as error on failure is determined by the transient check (see MarkAccountFailure):
+// This entry point is reserved for callers that have already determined the failure should be recorded (e.g. cases without an error object).
 func (s *Store) MarkAccountResult(id string, ok bool, note string) {
 	s.markAccountResult(id, ok, note, false)
 }
 
-// MarkAccountFailure 记录一次带错误对象的失败。
+// MarkAccountFailure records a failure with an error object.
 //
-// 瞬时失败（EOF / 429 / 5xx / 容量拒绝 / 签到限流）只累加 Failures 与
-// last_err，**不动 status**：下一次请求成不成跟这次没关系，一次抖动不该
-// 让账号在控制台上长期显示“不健康”（docs/changes.md §45）。
+// Transient failures (EOF / 429 / 5xx / capacity rejection / check-in rate limiting) only increment Failures and
+// last_err, and **do not touch status**: whether the next request succeeds has nothing to do with this one; a single blip should not
+// make the account show as "unhealthy" in the console for a long time (docs/changes.md §45).
 func (s *Store) MarkAccountFailure(id string, err error) {
 	if err == nil {
 		return
 	}
-	// 上下文被取消 = 我们自己放弃了这个请求（客户端断开 / 上层收尾），
-	// 不是账号的问题。记上去只会让 failures 里掺进与上游无关的噪声，
-	// 而 failures 是控制台判断「这个号是不是坏了」的第一眼依据。
+	// Context canceled = we abandoned this request ourselves (client disconnected / upper layer wrapping up),
+	// not an account problem. Recording it would only mix noise unrelated to the upstream into failures,
+	// and failures is the first thing the console looks at to judge "is this account broken".
 	if errors.Is(err, context.Canceled) {
 		return
 	}
@@ -405,11 +405,11 @@ func (s *Store) markAccountResult(id string, ok bool, note string, transient boo
 			a.Status = "ok"
 			a.LastErr = ""
 			a.LastErrAt = 0
-			// 推理成功说明额度已恢复（或这条 403 是历史噪声）。
+			// Inference success means the quota has recovered (or this 403 is historical noise).
 			a.QuotaUntil = 0
-			// 注意：不在这里清 ProbeAfter —— 推理成功不等于 /theos 会成功。
-			// 签到限流的账号正是“能推理、不能签到”，清掉冷却会让后台守护
-			// 每分钟又去磕一次 403。探测成功后由 SetAccountAllowance 清零。
+			// Note: ProbeAfter is not cleared here - inference success does not mean /theos will succeed.
+			// The accounts rate-limited on check-in are exactly the "can infer, cannot check in" ones; clearing the cooldown would make the background guardian
+			// hit the 403 again every minute. After a successful probe, SetAccountAllowance clears it.
 			if note != "" {
 				a.Note = note
 			}
@@ -425,12 +425,12 @@ func (s *Store) markAccountResult(id string, ok bool, note string, transient boo
 	}
 }
 
-// RecoverStaleErrors 把“已经很久没再失败”的 error 号改回 ok，返回改动个数。
+// RecoverStaleErrors changes error accounts that "have not failed again for a long time" back to ok, returning the number of changes.
 //
-// 为什么需要一次性扫描：status 是展示与排序的依据，光靠 AccountReady 的懒判定
-// 会让账号列表里的红点与顶部徽章对不上。后台 30s 跳一次（O(n)，与账号数同阶）。
+// Why a one-shot scan is needed: status is the basis for display and sorting; relying only on AccountReady's lazy evaluation
+// would make the red dots in the account list disagree with the top badge. The background ticks every 30s (O(n), same order as the number of accounts).
 //
-// blocked 不动：它不会自愈，必须等一次成功 /theos 或人工处理。
+// blocked is left alone: it does not self-heal and must wait for a successful /theos or manual handling.
 func (s *Store) RecoverStaleErrors(now time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -442,17 +442,17 @@ func (s *Store) RecoverStaleErrors(now time.Time) int {
 		if now.Sub(time.Unix(a.LastErrAt, 0)) < deepai.ErrorStaleAfter {
 			continue
 		}
-		// 保留 last_err / failures 作为历史，只把“现在是否健康”改回去。
+		// Keep last_err / failures as history; only change "whether it is healthy now" back.
 		a.Status = "ok"
 		recovered++
 	}
 	return recovered
 }
 
-// BlockAccount 把账号标记为“上游策略拦截”（当前来源：social_login_required）。
+// BlockAccount marks the account as "upstream policy blocked" (current source: social_login_required).
 //
-// 与普通失败的区别：这不是网络/额度问题，换号重试救不回来。调度器会跳过
-// blocked，直到一次成功的 /theos 把它重新置回 ok（见 SetAccountAllowance）。
+// Difference from an ordinary failure: this is not a network/quota problem, and retrying with another account will not save it. The scheduler skips
+// blocked until a successful /theos sets it back to ok (see SetAccountAllowance).
 func (s *Store) BlockAccount(id, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -470,10 +470,10 @@ func (s *Store) BlockAccount(id, reason string) {
 	}
 }
 
-// MarkQuotaExhausted 标记账号「当日额度用完」，until 之前调度跳过它。
+// MarkQuotaExhausted marks the account as "daily quota used up"; the scheduler skips it until the given time.
 //
-// 与 BlockAccount 的区别：这是自愈状态（到点自动恢复），不需要人工处理，
-// 也不该让控制台把它显示成「被策略拦截」。
+// Difference from BlockAccount: this is a self-healing state (recovers automatically when due), requires no manual handling,
+// and the console should not display it as "policy blocked".
 func (s *Store) MarkQuotaExhausted(id string, until time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -488,7 +488,7 @@ func (s *Store) MarkQuotaExhausted(id string, until time.Time) {
 	}
 }
 
-// ClearQuotaExhausted 清除额度用完标记（探测到余额恢复时调用）。
+// ClearQuotaExhausted clears the quota-exhausted mark (called when a probe detects the balance has recovered).
 func (s *Store) ClearQuotaExhausted(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -500,7 +500,7 @@ func (s *Store) ClearQuotaExhausted(id string) {
 	}
 }
 
-// SetAccountAllowance 缓存一次配额探测结果。
+// SetAccountAllowance caches the result of one quota probe.
 func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -510,8 +510,8 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 		}
 		a.LastUsed = time.Now().Unix()
 		if err != nil {
-			// 瞬时错误（EOF / 429 / 签到限流）不该把账号打成 error：
-			// 探测失败经常是成片的出口抖动，不是账号本身坏了。
+			// Transient errors (EOF / 429 / check-in rate limiting) should not mark the account as error:
+			// Probe failures are often widespread egress flakiness, not the account itself being broken.
 			if !deepai.Transient(err) {
 				a.Status = deepai.StatusError
 			}
@@ -532,16 +532,16 @@ func (s *Store) SetAccountAllowance(id string, al *deepai.Allowance, err error) 
 	}
 }
 
-// RecordProbeFailure 记一次「自动复探」失败：只推进探测退避，不改调度状态。
+// RecordProbeFailure records one "automatic re-probe" failure: it only advances probe backoff and does not change scheduling state.
 //
-// 与 SetAccountAllowance 的错误分支的区别：那里是**有人明确想知道**
-// 探测结果的路径（手动 checkin / 入池探活），失败要落 Status / Failures；
-// 这里来自推理路径上的按需复探，一次出口抖动不该让调度器判号坏了，
-// 也不该覆盖控制台上更具体的原因（social_login 之类的备注）。
+// Difference from the error branch of SetAccountAllowance: there, **someone explicitly wants to know**
+// The probe result path (manual checkin / pool-entry liveness probe) must persist failures to Status / Failures;
+// This comes from on-demand re-probing on the inference path; a single egress flake should not make the scheduler judge the account as broken,
+// nor should it overwrite the more specific reason on the console (notes such as social_login).
 //
-// 但退避**必须**留下：不记 ProbeAfter 时 quotaNeedsRefresh 永远返回 true，
-// 每一个选中该账号的请求都会再探一次 —— 线上实测同一账号连续失败
-// 323 次/小时（见 docs/changes.md §61），探针本身就成了上游风控特征。
+// But the backoff **must** remain: without recording ProbeAfter, quotaNeedsRefresh always returns true,
+// every request that selects this account will probe again - measured in production, the same account failed continuously
+// 323 times/hour (see docs/changes.md §61), and the probe itself becomes an upstream risk-control signature.
 func (s *Store) RecordProbeFailure(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -554,17 +554,17 @@ func (s *Store) RecordProbeFailure(id string) {
 	}
 }
 
-// bumpProbeBackoff 推进账号的探测退避（调用方持锁）。
+// bumpProbeBackoff advances the account's probe backoff (caller holds the lock).
 func bumpProbeBackoff(a *deepai.Account) {
 	a.ProbeFailures++
 	a.ProbeAfter = time.Now().Add(probeBackoff(a.ProbeFailures)).Unix()
 }
 
-// probeBackoff 给出连续探测失败后的冷却时长：2min → 10min → 1h（封顶）。
+// probeBackoff returns the cooldown duration after consecutive probe failures: 2min → 10min → 1h (capped).
 //
-// 不缓存失败结果时，后台守护每 5 分钟会把同一批失败号全部重探一遍；
-// 而失败往往是成片的（出口故障 / 上游抖动），653 号规模下就是持续的
-// /theos 风暴。与 docs/recon.md 的「签到是有限资源」是同一条约束。
+// When failure results are not cached, the background daemon re-probes the entire same batch of failed accounts every 5 minutes;
+// and failures are often widespread (egress failure / upstream flakiness); at a scale of 653 accounts, this is a continuous
+// /theos storm. This is the same constraint as "check-in is a limited resource" in docs/recon.md.
 func probeBackoff(consecutive int) time.Duration {
 	switch {
 	case consecutive <= 1:
@@ -576,10 +576,10 @@ func probeBackoff(consecutive int) time.Duration {
 	}
 }
 
-// LockAccountProbe 给账号的额度探测加静默锁（目前来源：check_in_refused）。
+// LockAccountProbe adds a silent lock to the account's quota probe (current source: check_in_refused).
 //
-// 与普通失败的区别：上游没坏、账号也能推理，只是当天的「重启签到」次数用尽；
-// 锁住探测可以避免后台守护与推理前签到反复撞 403。
+// Difference from ordinary failures: the upstream is not broken and the account can still perform inference; it is just that the day's "restart check-in" count is exhausted;
+// Locking the probe prevents the background daemon and pre-inference check-in from repeatedly hitting 403.
 func (s *Store) LockAccountProbe(id string, until time.Time, note string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

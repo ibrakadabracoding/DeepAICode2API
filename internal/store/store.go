@@ -1,6 +1,7 @@
-// Package store 负责网关状态的持久化（账号 / 密钥 / 设置 / 日志）。
+// Package store persists gateway state (accounts / keys / settings / logs).
 //
-// 选号策略在 internal/pool；本包只在持锁状态下调用它，并把结果作为快照交付。
+// Account selection lives in internal/pool; this package only calls it while
+// holding the lock and delivers the result as a snapshot.
 package store
 
 import (
@@ -11,7 +12,7 @@ import (
 	"deepaicode2api/internal/pool"
 )
 
-// APIKey 是网关对外签发的调用密钥。
+// APIKey is a call key issued by the gateway.
 type APIKey struct {
 	Key       string `json:"key"`
 	Name      string `json:"name"`
@@ -22,7 +23,7 @@ type APIKey struct {
 	Requests  int64  `json:"requests"`
 }
 
-// Settings 是运行期可调参数。
+// Settings holds runtime-adjustable parameters.
 type Settings struct {
 	ModelAliases   map[string]string `json:"model_aliases"`
 	RequestTimeout int               `json:"request_timeout_sec"`
@@ -31,47 +32,56 @@ type Settings struct {
 	CORSOrigin     string            `json:"cors_origin"`
 	AdminPassword  string            `json:"admin_password"`
 	FallbackModel  string            `json:"fallback_model"`
-	// StrictModel 关闭「解析不到就回落」的行为：模型名不在目录里时返回 404，
-	// 而不是静默换成默认模型。默认关闭，保持开箱即用。
+	// StrictModel disables "fall back when it cannot be resolved": when a model
+	// name is not in the catalog, return 404 instead of silently switching to the
+	// default model. Off by default to keep it working out of the box.
 	StrictModel bool `json:"strict_model"`
 
-	// Lane 是探测到的 Theos 车道版本（空 = 用编译期默认值）。
+	// Lane is the detected Theos lane version (empty = use the compile-time default).
 	//
-	// 上游抬车道时旧值一律回 426；网关启动时会借账号凭据探测一次 /models，
-	// 命中就写在这里，升级不用改代码。
+	// When the upstream bumps the lane, the old value always returns 426; on
+	// startup the gateway probes /models once using account credentials and writes
+	// the result here, so upgrades need no code change.
 	Lane string `json:"lane,omitempty"`
 
-	// LaneBuild 是写入 Lane 时的编译期车道（deepai.LaneVersion）。
+	// LaneBuild is the compile-time lane (deepai.LaneVersion) when Lane was written.
 	//
-	// 它把「本次构建探测到的结果」和「旧版本残留」区分开：正常情况下车道
-	// 只向前走，但上游也可能只保留旧车道（或探测结果比编译值旧）。只有
-	// LaneBuild 与当前编译值一致时，CurrentLane 才无条件信任 Lane；否则仍按
-	// max(Lane, 编译值) 取较新值，避免升级后还跑旧车道。
+	// It distinguishes "the result detected by this build" from "leftovers from an
+	// older version": normally lanes only move forward, but the upstream may keep
+	// only the old lane (or the detected result may be older than the compiled
+	// value). CurrentLane trusts Lane unconditionally only when LaneBuild matches
+	// the current compiled value; otherwise it still takes the newer value via
+	// max(Lane, compiled value), so an upgrade does not keep running an old lane.
 	LaneBuild string `json:"lane_build,omitempty"`
 
-	// RateLimitRPS / RateLimitBurst 是每把密钥的令牌桶（0 = 不限速）。
-	// RateLimitBurst 为 0 时按 max(2, RPS) 取容量。
+	// RateLimitRPS / RateLimitBurst are the token bucket for each key (0 = no rate limit).
+	// When RateLimitBurst is 0, capacity is max(2, RPS).
 	RateLimitRPS   float64 `json:"rate_limit_rps,omitempty"`
 	RateLimitBurst int     `json:"rate_limit_burst,omitempty"`
-	// KeyConcurrency 是每把密钥的并发在途请求上限（0 = 不限）。
+	// KeyConcurrency is the in-flight concurrency cap for each key (0 = unlimited).
 	KeyConcurrency int `json:"key_concurrency,omitempty"`
 
-	// CheckinBlockMS 是推理前同步签到的等待预算（毫秒，0 = 默认 10000）。
+	// CheckinBlockMS is the wait budget for synchronous check-in before inference
+	// (milliseconds, 0 = default 10000).
 	//
-	// 2026-11-13 线上实测签到阻塞推理 292 次、均值 4.8s：调小它可以把首包
-	// 延迟压下来，代价是这次请求可能带着旧 nonce 发出（上一轮已回传过，
-	// 下一轮继续补），不会让推理失败。
+	// Measured in production on 2026-11-13: check-in blocked inference 292 times,
+	// averaging 4.8s; lowering this reduces first-packet latency, at the cost of
+	// the request possibly going out with an old nonce (the previous round already
+	// reported back, and the next round continues the catch-up), which does not
+	// make inference fail.
 	CheckinBlockMS int `json:"checkin_block_ms,omitempty"`
 
-	// PresetDesktopShape 让网关对「缺 system 消息」的聊天请求预置桌面端形状，
-	// 不再先吃一次 400 再重试。
+	// PresetDesktopShape makes the gateway preset the desktop shape for chat
+	// requests that lack a system message, instead of first taking a 400 and then
+	// retrying.
 	//
-	// 只对已经确认过需要该形状的调用方生效（按 API Key 记忆 10 分钟），
-	// 首次仍走「透传 → 400 → 补形状重试」的学习路径。
+	// Only applies to callers already confirmed to need that shape (remembered per
+	// API Key for 10 minutes); the first time still follows the learning path of
+	// "pass through → 400 → add shape and retry".
 	PresetDesktopShape bool `json:"preset_desktop_shape,omitempty"`
 }
 
-// LogEntry 是一条请求日志（只记元信息，不落对话内容）。
+// LogEntry is one request log entry (metadata only; no conversation content is stored).
 type LogEntry struct {
 	Time      int64  `json:"time"`
 	Key       string `json:"key"`
@@ -85,47 +95,55 @@ type LogEntry struct {
 	OutputLen int    `json:"output_len"`
 	TokensIn  int    `json:"tokens_in"`
 	TokensOut int    `json:"tokens_out"`
-	// CachedTokens 是上游报告的前缀缓存命中 token 数（无此字段时为 0）。
+	// CachedTokens is the number of prefix-cache-hit tokens reported by the
+	// upstream (0 when the field is absent).
 	CachedTokens int     `json:"cached_tokens,omitempty"`
 	Cost         float64 `json:"cost"`
 	Err          string  `json:"err,omitempty"`
 }
 
-// Stats 是累计统计。
+// Stats holds cumulative statistics.
 type Stats struct {
 	TotalRequests  int64 `json:"total_requests"`
 	FailedRequests int64 `json:"failed_requests"`
 	TotalCharsOut  int64 `json:"total_chars_out"`
 	TotalTokensIn  int64 `json:"total_tokens_in"`
 	TotalTokensOut int64 `json:"total_tokens_out"`
-	// TotalCachedTokens 是上游报告「命中前缀缓存」的 prompt token 总量，
-	// 用于算缓存命中率（cached / prompt）。
+	// TotalCachedTokens is the total prompt tokens for which the upstream reported
+	// a "prefix cache hit", used to compute the cache hit rate (cached / prompt).
 	//
-	// 注意它是**累计值**：跟 DayTokensIn（当日）组合算比率是错的（会得出一个
-	// 既不等于累计也不等于当日的数）。控制台因此同时存一份 DayCachedTokens。
+	// Note that it is a **cumulative** value: combining it with DayTokensIn
+	// (current day) to compute a ratio is wrong (it yields a number that is
+	// neither cumulative nor daily). The console therefore also stores
+	// DayCachedTokens.
 	TotalCachedTokens int64   `json:"total_cached_tokens,omitempty"`
 	TotalCost         float64 `json:"total_cost"`
-	// Day / DayTokensIn / DayTokensOut / DayCachedTokens 是「按本地日期」的当日用量。
+	// Day / DayTokensIn / DayTokensOut / DayCachedTokens are the current day's usage
+	// "by local date".
 	//
-	// 跨天时由 Record 自动清零（不需要定时任务）；Date 用 YYYY-MM-DD。
+	// Record resets them automatically when the day changes (no scheduled job
+	// needed); Date uses YYYY-MM-DD.
 	Day             string `json:"day,omitempty"`
 	DayTokensIn     int64  `json:"day_tokens_in,omitempty"`
 	DayTokensOut    int64  `json:"day_tokens_out,omitempty"`
 	DayCachedTokens int64  `json:"day_cached_tokens,omitempty"`
-	// StartedAt 是统计开始时间（首次启动），ResetAt 是最近一次手动重置的时间。
+	// StartedAt is when statistics collection started (first launch); ResetAt is
+	// the time of the most recent manual reset.
 	//
-	// 两者分开：控制台需要能解释「统计数比日志少」——重置只清计数，
-	// 日志按设计保留。只保留 StartedAt 时，重置后它变成"启动时间"，
-	// 语义就含混了。
+	// They are kept separate: the console needs to explain "fewer stats than logs"
+	// - a reset only clears counters, and logs are retained by design. With only
+	// StartedAt, it would turn into a "launch time" after a reset, which muddies
+	// the semantics.
 	StartedAt int64 `json:"started_at"`
 	ResetAt   int64 `json:"reset_at,omitempty"`
 }
 
-// State 是全部持久化状态。
+// State is the entire persisted state.
 //
-// Logs 与 Stats 刻意不写进主文件：它们随每个请求变动，留在里面会让 Save 的
-// “内容未变则跳过”永远失效。日志走 append-only 的 <base>-logs.jsonl，
-// 统计走 <base>-stats.json。
+// Logs and Stats are deliberately not written to the main file: they change with
+// every request, and keeping them there would permanently defeat Save's
+// "skip if content unchanged" check. Logs go to the append-only
+// <base>-logs.jsonl, stats go to <base>-stats.json.
 type State struct {
 	Accounts      []*deepai.Account `json:"accounts"`
 	Keys          []*APIKey         `json:"keys"`
@@ -138,7 +156,8 @@ type State struct {
 	MachineID     string            `json:"machine_id"`
 }
 
-// legacyState 是拆分前的状态文件格式（含 logs / stats），仅用于读取迁移。
+// legacyState is the pre-split state file format (including logs / stats), used
+// only for read migration.
 type legacyState struct {
 	Accounts      []*deepai.Account `json:"accounts"`
 	Keys          []*APIKey         `json:"keys"`
@@ -151,54 +170,60 @@ type legacyState struct {
 	MachineID     string            `json:"machine_id"`
 }
 
-// Store 是带锁的状态容器。
+// Store is a locked state container.
 type Store struct {
 	mu    sync.RWMutex
 	path  string
 	st    *State
 	sched *pool.Scheduler
 
-	// statsPath / logsPath 是由主路径派生的旁路文件。
+	// statsPath / logsPath are side files derived from the main path.
 	statsPath string
 	logsPath  string
 	logs      *logStore
 
-	// masterKey 非空时状态文件整体加密（AES-256-GCM）。
+	// masterKey, when non-empty, encrypts the whole state file (AES-256-GCM).
 	masterKey []byte
-	// encrypted 记录上次读写时文件是否已加密（用于启动日志 / 控制台提示）。
+	// encrypted records whether the file was encrypted on the last read/write (for startup logs / console hints).
 	encrypted bool
-	// lastSaved 是上次落盘的明文快照，用于跳过无变化的重复写盘。
+	// lastSaved is the plaintext snapshot from the last save, used to skip redundant writes with no changes.
 	lastSaved []byte
-	// statsDirty 标记统计数据有变化（单独小文件，每次请求都会变）。
+	// statsDirty marks that statistics changed (a separate small file that changes on every request).
 	statsDirty bool
 
-	// savesTotal / savedBytes 是主文件的实际写盘次数与明文字节数。
+	// savesTotal / savedBytes are the actual write count and plaintext byte count for the main file.
 	//
-	// 号池涨到 653 个账号后，每个请求都会改账号运行态，很容易让
-	// 「内容未变则跳过」失效、退化成 30s 一次约 950KB 的全量重写。
-	// 这两个计数（不落盘）用来在压测里直接观测写放大，而不是靠猜。
+	// After the account pool grew to 653 accounts, every request changes account
+	// runtime state, easily defeating "skip if content unchanged" and degrading to
+	// a full rewrite of about 950KB every 30s. These two counters (not persisted)
+	// are used to directly observe write amplification during load tests rather
+	// than relying on guesswork.
 	savesTotal atomic.Int64
 	savedBytes atomic.Int64
 
-	// saveMu 串行化落盘。
+	// saveMu serializes persistence.
 	//
-	// Save 会被多个 goroutine 调用：后台 30s 周期保存、每个管理操作，
-	// 以及批量入池后「每账号一个」的配额复探 goroutine。没有它时（实测）：
-	//   - 两个 Save 共用 <path>.tmp，互相截断，rename 后可能落下坏文件；
-	//     Windows 上更直接：报「文件被另一个进程占用」而失败；
-	//   - 先到者的 rename 晚到者覆盖，磁盘可能比内存旧；
-	//   - lastSaved 底层数组读写竞争（-race 可复现）。
+	// Save is called by multiple goroutines: the background 30s periodic save, every
+	// admin operation, and the per-account quota re-probe goroutines started after a
+	// batch pool insert. Without it (measured):
+	//   - two Saves share <path>.tmp and truncate each other, possibly leaving a
+	//     corrupt file after rename; on Windows it is even more direct: the call
+	//     fails with "file is in use by another process";
+	//   - the earlier rename is overwritten by the later one, so disk may be older
+	//     than memory;
+	//   - lastSaved's backing array has a read/write race (reproducible with -race).
 	saveMu sync.Mutex
 }
 
-// DefaultSettings 返回默认设置。
+// DefaultSettings returns the default settings.
 func DefaultSettings() Settings {
 	return Settings{
 		ModelAliases:   map[string]string{},
 		RequestTimeout: 600,
 		MaxRetries:     3,
 		LogKeep:        500,
-		// 默认仅放行本机来源；如需局域网访问，在控制台显式配置。
+		// By default only allow local origins; configure explicitly in the console
+		// for LAN access.
 		CORSOrigin:    "",
 		FallbackModel: "",
 	}

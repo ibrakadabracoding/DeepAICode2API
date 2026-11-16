@@ -6,9 +6,9 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// --- 模型目录 ---
+// --- Model catalog ---
 
-// Models 返回模型目录快照。
+// Models returns a snapshot of the model catalog.
 func (s *Store) Models() []deepai.Model {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -17,21 +17,21 @@ func (s *Store) Models() []deepai.Model {
 	return out
 }
 
-// DefaultModel 返回当前默认模型。
+// DefaultModel returns the current default model.
 func (s *Store) DefaultModel() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.st.DefaultModel
 }
 
-// ModelsUpdated 返回目录更新时间。
+// ModelsUpdated returns the catalog update time.
 func (s *Store) ModelsUpdated() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.st.ModelsUpdated
 }
 
-// SetModels 更新模型目录缓存。
+// SetModels updates the model catalog cache.
 func (s *Store) SetModels(models []deepai.Model, def string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -44,14 +44,14 @@ func (s *Store) SetModels(models []deepai.Model, def string) {
 	s.st.ModelsUpdated = time.Now().Unix()
 }
 
-// SetMachineID 记录本机机器指纹。
+// SetMachineID records this machine's fingerprint.
 func (s *Store) SetMachineID(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.st.MachineID = id
 }
 
-// MachineID 返回已记录的机器指纹。
+// MachineID returns the recorded machine fingerprint.
 func (s *Store) MachineID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

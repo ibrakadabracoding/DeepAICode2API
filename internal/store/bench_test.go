@@ -8,7 +8,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// benchStore 构造一个装着 n 个账号的 Store（不落盘）。
+// benchStore builds a Store holding n accounts (without persisting to disk).
 func benchStore(b *testing.B, n int) *Store {
 	b.Helper()
 	st, err := Open(filepath.Join(b.TempDir(), "state.json"))
@@ -29,9 +29,9 @@ func benchStore(b *testing.B, n int) *Store {
 	return st
 }
 
-// BenchmarkAccountPage600 是控制台账号分页的基线。
+// BenchmarkAccountPage600 is the baseline for console account pagination.
 //
-// 600 个号、每页 50 行：应当只克隆 50 个账号，而不是整池。
+// 600 accounts, 50 rows per page: it should clone only 50 accounts, not the whole pool.
 func BenchmarkAccountPage600(b *testing.B) {
 	st := benchStore(b, 600)
 	q := AccountQuery{Offset: 100, Limit: 50, Sort: "last_used", Desc: true}
@@ -45,7 +45,7 @@ func BenchmarkAccountPage600(b *testing.B) {
 	}
 }
 
-// BenchmarkPickAccount600 覆盖「一次读锁 + 只拷贝选中账号」的选号路径。
+// BenchmarkPickAccount600 covers the account-picking path with "one read lock + copying only the selected account".
 func BenchmarkPickAccount600(b *testing.B) {
 	st := benchStore(b, 600)
 	b.ReportAllocs()
@@ -58,7 +58,7 @@ func BenchmarkPickAccount600(b *testing.B) {
 	}
 }
 
-// BenchmarkAnySchedulable600 覆盖全忙判定（不拷贝）。
+// BenchmarkAnySchedulable600 covers the all-busy check (no copying).
 func BenchmarkAnySchedulable600(b *testing.B) {
 	st := benchStore(b, 600)
 	b.ReportAllocs()

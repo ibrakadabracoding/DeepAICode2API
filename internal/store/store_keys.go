@@ -7,13 +7,13 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// --- 密钥 ---
+// --- Keys ---
 
-// Keys 返回密钥快照。
+// Keys returns a snapshot of keys.
 //
-// 元素必须逐份拷贝：调用方拿到切片后会在锁外读字段（控制台的 safeKeyList），
-// 而 ValidKey 在每个数据面请求上都会就地累加 LastUsed / Requests。返回号池里的
-// 活指针会让「控制台开着 + 有流量」变成实打实的数据竞争（-race 可复现）。
+// Elements must be copied one by one: after receiving the slice, the caller reads fields outside the lock (the console's safeKeyList),
+// and ValidKey accumulates LastUsed / Requests in place on every data-plane request. Returning live
+// pointers from the account pool would turn "console open + traffic flowing" into a real data race (reproducible with -race).
 func (s *Store) Keys() []*APIKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -25,10 +25,10 @@ func (s *Store) Keys() []*APIKey {
 	return out
 }
 
-// AddKey 新增密钥（group 为空时归入 default）。
+// AddKey adds a key (grouped into default when group is empty).
 //
-// 返回值是副本：调用方通常紧接着读 Key 字段返回给用户，不应让它持有号池里的
-// 活指针（同 Keys 的理由）。
+// The return value is a copy: the caller usually reads the Key field right after to return it to the user, and should not hold a live
+// pointer from the account pool (same reason as Keys).
 func (s *Store) AddKey(name, group string) *APIKey {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,7 +48,7 @@ func (s *Store) AddKey(name, group string) *APIKey {
 	return &c
 }
 
-// KeyGroup 返回某个网关密钥绑定的号池分组（未知密钥返回空串）。
+// KeyGroup returns the account pool group bound to a gateway key (returns an empty string for an unknown key).
 func (s *Store) KeyGroup(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -60,10 +60,10 @@ func (s *Store) KeyGroup(key string) string {
 	return ""
 }
 
-// SetKeyGroup 修改密钥绑定的号池分组（空串等价于 default）。
+// SetKeyGroup changes the account pool group bound to a key (an empty string is equivalent to default).
 //
-// 用于运营调整：例如清空压测分组后，把密钥改绑回 default，
-// 避免「分组内无可用账号」。返回是否找到该密钥。
+// Used for operational adjustments: for example, after clearing a stress-test group, rebind the key back to default,
+// to avoid "no available accounts in the group". Returns whether the key was found.
 func (s *Store) SetKeyGroup(key, group string) bool {
 	group = strings.TrimSpace(group)
 	if group == "" {
@@ -80,7 +80,7 @@ func (s *Store) SetKeyGroup(key, group string) bool {
 	return false
 }
 
-// DeleteKey 删除密钥。
+// DeleteKey deletes a key.
 func (s *Store) DeleteKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,7 +93,7 @@ func (s *Store) DeleteKey(key string) bool {
 	return false
 }
 
-// ToggleKey 启用/停用密钥。
+// ToggleKey enables/disables a key.
 func (s *Store) ToggleKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,7 +106,7 @@ func (s *Store) ToggleKey(key string) bool {
 	return false
 }
 
-// ValidKey 校验密钥并计数。
+// ValidKey validates a key and counts it.
 func (s *Store) ValidKey(key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +120,7 @@ func (s *Store) ValidKey(key string) bool {
 	return false
 }
 
-// HasKeys 报告是否已签发任何密钥。
+// HasKeys reports whether any key has been issued.
 func (s *Store) HasKeys() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -11,8 +11,9 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// Save 落盘时 LastUsed 应量化到 5 分钟：它每个请求都变，秒级精度会让
-// 「内容未变则跳过」在持续流量下失效（653 号池每次重写约 950KB）。
+// When Save persists to disk, LastUsed should be quantized to 5 minutes: it changes on every
+// request, and second-level precision would defeat "skip if unchanged" under sustained traffic
+// (each rewrite of the 653-account pool is about 950KB).
 func TestSaveQuantizesLastUsed(t *testing.T) {
 	st := newStore(t)
 	acct := addAccount(t, st, "sk-quant", "default")
@@ -51,17 +52,18 @@ func TestSaveQuantizesLastUsed(t *testing.T) {
 	if got > now {
 		t.Fatalf("落盘 LastUsed = %d 晚于当前时间 %d", got, now)
 	}
-	// 额度探测时间戳同样量化：它每次探测都会变，否则写放大又回来了。
+	// The quota probe timestamp is quantized the same way: it changes on every probe,
+	// otherwise write amplification comes right back.
 	if ca := disk.Accounts[0].Theos.CheckedAt; ca%saveTimestampGranularity != 0 {
 		t.Fatalf("落盘 checked_at = %d，未量化到 %ds", ca, saveTimestampGranularity)
 	}
-	// 内存里保持秒级精度。
+	// In memory, second-level precision is preserved.
 	if mem := st.Account(acct.ID).LastUsed; mem != now {
 		t.Fatalf("内存 LastUsed = %d，期望 %d", mem, now)
 	}
 }
 
-// 同一 5 分钟窗口内的新请求不应触发第二次主文件重写。
+// New requests within the same 5-minute window should not trigger a second rewrite of the main file.
 func TestSaveSkipsRewriteWithinGranularityWindow(t *testing.T) {
 	st := newStore(t)
 	acct := addAccount(t, st, "sk-window", "default")
@@ -81,11 +83,12 @@ func TestSaveSkipsRewriteWithinGranularityWindow(t *testing.T) {
 	}
 }
 
-// 写盘后若有请求推进统计，脏标志不能被清掉，否则最后一条统计只在内存里。
+// If a request advances stats after the snapshot is written, the dirty flag must not be cleared,
+// otherwise the last stat delta only ever lives in memory.
 func TestStatsDirtyKeptWhenRecordArrivesAfterSnapshot(t *testing.T) {
 	st := newStore(t)
 
-	written := st.Stats() // 模拟 Save 取到的快照
+	written := st.Stats() // Mock the snapshot retrieved by Save
 	st.Record(LogEntry{Status: 200}, 0)
 	st.clearStatsDirtyIfUnchanged(written)
 
@@ -96,7 +99,7 @@ func TestStatsDirtyKeptWhenRecordArrivesAfterSnapshot(t *testing.T) {
 		t.Fatal("快照之后到达的统计被清脏，最后一次自增不会落盘")
 	}
 
-	// 快照与当前一致时才允许清脏。
+	// The dirty flag may be cleared only when the snapshot matches the current values.
 	st.clearStatsDirtyIfUnchanged(st.Stats())
 	st.mu.RLock()
 	dirty = st.statsDirty
@@ -110,7 +113,7 @@ func TestClearStatsKeepsStartedAtAndRecordsReset(t *testing.T) {
 	st := newStore(t)
 	st.Record(LogEntry{Status: 200}, 0)
 	started := st.Stats().StartedAt
-	time.Sleep(1100 * time.Millisecond) // StartedAt / ResetAt 都是秒级
+	time.Sleep(1100 * time.Millisecond) // StartedAt / ResetAt are both in seconds
 
 	st.ClearStats()
 	got := st.Stats()
@@ -125,7 +128,8 @@ func TestClearStatsKeepsStartedAtAndRecordsReset(t *testing.T) {
 	}
 }
 
-// 快照必须与活数据隔离：Save 的序列化在锁外，共享指针会和就地修改撞车。
+// The snapshot must be isolated from live data: Save serializes outside the lock,
+// so shared pointers would collide with in-place mutations.
 func TestSnapshotIsolatesKeysAndModels(t *testing.T) {
 	st := newStore(t)
 	k1 := st.AddKey("a", "")
@@ -140,7 +144,7 @@ func TestSnapshotIsolatesKeysAndModels(t *testing.T) {
 	snap := st.snapshotLocked()
 	st.mu.RUnlock()
 
-	// 快照之后的改动不得反向污染快照。
+	// Changes made after the snapshot must not leak back into it.
 	st.ToggleKey(k1.Key)
 	st.DeleteKey(k2.Key)
 	st.SetModels([]deepai.Model{{ID: "m2"}}, "m2")
@@ -162,7 +166,7 @@ func TestSnapshotIsolatesKeysAndModels(t *testing.T) {
 	}
 }
 
-// 并发：密钥增删/开关与 Save 同时进行（配合 -race 验证无共享写）。
+// Concurrency: key add/delete/toggle runs while Save is in progress (use -race to verify no shared writes).
 func TestSaveWithConcurrentKeyMutations(t *testing.T) {
 	st := newStore(t)
 	st.AddKey("base", "")
@@ -194,7 +198,7 @@ func TestSaveCountersTrackMainFileWrites(t *testing.T) {
 	if saves != 1 || written <= 0 {
 		t.Fatalf("首次保存计数 = (%d, %d)", saves, written)
 	}
-	// 内容未变：不应再写。
+	// Content unchanged: should not write again.
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -203,13 +207,13 @@ func TestSaveCountersTrackMainFileWrites(t *testing.T) {
 	}
 }
 
-// -seal 的核心承诺：历史明文日志行也要被一并封存，且重开后仍可读。
+// The core promise of -seal: historical plaintext log lines must be sealed too, and remain readable after reopening.
 func TestResealSealsLegacyPlaintextLogs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	key := bytes.Repeat([]byte{0x2a}, 32)
 
-	// 1) 先用无密钥模式写出明文状态与明文日志（模拟历史数据）。
+	// 1) First write plaintext state and plaintext logs in keyless mode (simulating historical data).
 	plain, err := OpenWithKey(path, nil)
 	if err != nil {
 		t.Fatalf("OpenWithKey(nil): %v", err)
@@ -234,7 +238,7 @@ func TestResealSealsLegacyPlaintextLogs(t *testing.T) {
 		}
 	}
 
-	// 2) 用主密钥重新打开并封存。
+	// 2) Reopen with the master key and seal.
 	st, err := OpenWithKey(path, key)
 	if err != nil {
 		t.Fatalf("OpenWithKey(key): %v", err)
@@ -250,14 +254,14 @@ func TestResealSealsLegacyPlaintextLogs(t *testing.T) {
 		t.Fatalf("封存的明文日志行 = %d，期望 ≥2", rep.SealedLines)
 	}
 
-	// 3) 每个文件都不再是明文。
+	// 3) No file is plaintext anymore.
 	assertSealedFile(t, path)
 	assertSealedFile(t, statsPath)
 	for _, p := range extras {
 		assertSealedLines(t, p)
 	}
 
-	// 4) 重开后历史日志仍可读（说明封存没有破坏内容）。
+	// 4) Historical logs are still readable after reopening (proving sealing did not corrupt the content).
 	reopened, err := OpenWithKey(path, key)
 	if err != nil {
 		t.Fatalf("重新打开: %v", err)
@@ -266,7 +270,7 @@ func TestResealSealsLegacyPlaintextLogs(t *testing.T) {
 		t.Fatalf("封存后日志丢失：%d 条", len(logs))
 	}
 
-	// 5) 幂等：再跑一次不应再"转换"任何行。
+	// 5) Idempotent: running it again should not "convert" any more lines.
 	again, err := st.Reseal()
 	if err != nil {
 		t.Fatalf("二次 Reseal: %v", err)
@@ -276,10 +280,11 @@ func TestResealSealsLegacyPlaintextLogs(t *testing.T) {
 	}
 }
 
-// 加密开启后日志必须仍能重启读回：这是 sealLine（单行信封）的回归测试。
+// Once encryption is enabled, logs must still be readable after a restart: this is the regression test
+// for sealLine (single-line envelope).
 //
-// 改用缩进信封写日志时，一条记录会被拆成多行，按行切分的 decodeLine
-// 解析不出来，表现为“开启加密后日志一重启就消失”。
+// When writing logs with an indented envelope, one record is split across multiple lines,
+// and the line-based decodeLine cannot parse it - the symptom is "logs vanish after a restart once encryption is on".
 func TestEncryptedLogsSurviveReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -311,7 +316,7 @@ func TestEncryptedLogsSurviveReopen(t *testing.T) {
 }
 
 func TestResealRequiresMasterKey(t *testing.T) {
-	st := newStore(t) // 未配置主密钥
+	st := newStore(t) // no master key configured
 	if _, err := st.Reseal(); err == nil {
 		t.Fatal("未配置主密钥时 Reseal 应报错")
 	}

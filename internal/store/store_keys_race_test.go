@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// TestKeysSnapshotIsRaceFree 锁死「Keys() 必须返回副本」这个契约。
+// TestKeysSnapshotIsRaceFree locks in the contract that "Keys() must return a copy".
 //
-// ValidKey 在每个数据面请求上就地累加 LastUsed / Requests（持写锁），而控制台
-// 拿到 Keys() 之后是在锁外读同样的字段（server.safeKeyList）。返回号池里的活指针
-// 时，下面这段并发会被 -race 直接抓到（历史实现就是这样）；返回副本则始终干净。
+// ValidKey increments LastUsed / Requests in place on every data-plane request (holding the write lock), while the console
+// after obtaining Keys(), reads the same fields outside the lock (server.safeKeyList). Returning a live pointer from the account pool
+// would cause the following concurrency to be caught directly by -race (the historical implementation was like this); returning a copy is always clean.
 func TestKeysSnapshotIsRaceFree(t *testing.T) {
 	st := newStore(t)
 	key := st.AddKey("console", "")
@@ -28,7 +28,7 @@ func TestKeysSnapshotIsRaceFree(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 500; i++ {
-			// 读的字段与 safeKeyList 完全一致：任何一个共享都会命中竞态检测。
+			// The fields read are exactly the same as safeKeyList: any sharing will trigger the race detector.
 			for _, k := range st.Keys() {
 				_ = k.Enabled
 				_ = k.Group
@@ -44,12 +44,12 @@ func TestKeysSnapshotIsRaceFree(t *testing.T) {
 	}
 }
 
-// TestAddKeyReturnsCopy 保证 AddKey 的返回值不是号池里的活指针。
+// TestAddKeyReturnsCopy ensures that AddKey's return value is not a live pointer in the account pool.
 func TestAddKeyReturnsCopy(t *testing.T) {
 	st := newStore(t)
 	k := st.AddKey("x", "")
 
-	// 改返回值不得影响存储。
+	// Modifying the return value must not affect storage.
 	k.Enabled = false
 	k.Name = "hacked"
 	k.Requests = 999

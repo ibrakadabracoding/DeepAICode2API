@@ -15,10 +15,11 @@ import (
 	"deepaicode2api/internal/pool"
 )
 
-// Open 载入（或初始化）状态文件。
+// Open loads (or initializes) the state file.
 //
-// 主密钥来自 DEEPAI2API_MASTER_KEY：配置后写出的状态文件会被整体加密，
-// 未配置时保持明文（并在启动日志中警告）。
+// The master key comes from DEEPAI2API_MASTER_KEY: when configured, written state
+// files are encrypted as a whole; when not configured they stay plaintext (and a
+// warning is printed in the startup log).
 func Open(path string) (*Store, error) {
 	key, err := MasterKeyFromEnv()
 	if err != nil {
@@ -27,7 +28,7 @@ func Open(path string) (*Store, error) {
 	return OpenWithKey(path, key)
 }
 
-// deriveSidePaths 由主状态文件路径派生旁路文件路径。
+// deriveSidePaths derives the side file paths from the main state file path.
 func deriveSidePaths(path string) (statsPath, logsPath string) {
 	base := path
 	if trimmed, ok := strings.CutSuffix(path, ".json"); ok {
@@ -36,13 +37,15 @@ func deriveSidePaths(path string) (statsPath, logsPath string) {
 	return base + "-stats.json", base + "-logs.jsonl"
 }
 
-// OpenWithKey 用指定主密钥载入状态文件（key 为 nil 表示不加密）。
+// OpenWithKey loads the state file with the specified master key (key nil means
+// no encryption).
 //
-// 主文件之外还有两个旁路文件（由主路径派生）：
-//   - <base>-stats.json   累计统计（几百字节，每 30s 写一次）
-//   - <base>-logs.jsonl   请求日志（append-only，按大小轮转）
+// Besides the main file there are two side files (derived from the main path):
+//   - <base>-stats.json   cumulative stats (a few hundred bytes, written every 30s)
+//   - <base>-logs.jsonl   request logs (append-only, rotated by size)
 //
-// 旧版本把 logs / stats 内嵌在主文件里，载入时自动迁出并重写主文件。
+// Older versions embedded logs / stats in the main file; on load they are
+// automatically moved out and the main file is rewritten.
 func OpenWithKey(path string, key []byte) (*Store, error) {
 	statsPath, logsPath := deriveSidePaths(path)
 	s := &Store{
@@ -73,9 +76,10 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 		s.st.DefaultModel = legacy.DefaultModel
 		s.st.ModelsUpdated = legacy.ModelsUpdated
 		s.st.MachineID = legacy.MachineID
-		// 记住原始内容，首次 Save 可直接跳过。
+		// Remember the original content so the first Save can skip it directly.
 		s.lastSaved = append([]byte(nil), plain...)
-		// 旧格式：logs / stats 还在主文件里 → 迁出，稍后重写主文件。
+		// Old format: logs / stats are still in the main file → migrate them out and
+		// rewrite the main file later.
 		if len(legacy.Logs) > 0 || legacy.Stats != (Stats{}) {
 			s.st.Stats = legacy.Stats
 			seedLogs = legacy.Logs
@@ -89,7 +93,7 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 
 	s.applySettingsDefaults()
 
-	// 旁路文件比旧内嵌字段更新，优先采用。
+	// Side files are newer than the old embedded fields, so prefer them.
 	_, statErr := os.Stat(s.statsPath)
 	hadStatsFile := statErr == nil
 	if err := s.loadStats(); err != nil {
@@ -99,8 +103,9 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 		s.st.Stats.StartedAt = time.Now().Unix()
 	}
 	if !hadStatsFile {
-		// 首次运行或从旧格式迁移：必须把统计写到旁路文件，
-		// 否则它只活在内存里，下次重启就丢了。
+		// First run or migration from the old format: stats must be written to the
+		// side file, otherwise they only live in memory and are lost on the next
+		// restart.
 		s.statsDirty = true
 	}
 
@@ -118,7 +123,7 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 	}
 
 	if needMigrate {
-		// 强制重写主文件：把 logs / stats 从里面捕掉。
+		// Force a rewrite of the main file: strip logs / stats out of it.
 		s.lastSaved = nil
 		if err := s.Save(); err != nil {
 			return nil, fmt.Errorf("迁移状态文件失败: %w", err)
@@ -127,7 +132,8 @@ func OpenWithKey(path string, key []byte) (*Store, error) {
 	return s, nil
 }
 
-// applySettingsDefaults 补齐旧状态文件里缺失或已废弃的设置项。
+// applySettingsDefaults fills in settings that are missing or deprecated in old
+// state files.
 func (s *Store) applySettingsDefaults() {
 	def := DefaultSettings()
 	if s.st.Settings.ModelAliases == nil {
@@ -143,12 +149,13 @@ func (s *Store) applySettingsDefaults() {
 		s.st.Settings.LogKeep = def.LogKeep
 	}
 	if s.st.Settings.CORSOrigin == "*" {
-		// 历史状态文件里的通配符不再生效，收紧为本机来源。
+		// The wildcard in historical state files no longer takes effect; tighten it
+		// to local origins.
 		s.st.Settings.CORSOrigin = ""
 	}
 }
 
-// loadStats 读取统计旁路文件；不存在时保留旧内嵌值。
+// loadStats reads the stats side file; when missing, keeps the old embedded values.
 func (s *Store) loadStats() error {
 	raw, err := os.ReadFile(s.statsPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -169,18 +176,18 @@ func (s *Store) loadStats() error {
 	return nil
 }
 
-// Path 返回状态文件路径。
+// Path returns the state file path.
 func (s *Store) Path() string { return s.path }
 
-// Save 原子写回状态（配置主密钥时整文件加密）。
+// Save atomically writes the state back (the whole file is encrypted when a master key is configured).
 //
-// 分三部分，各自有独立的“未变化”判定：
-//  1. 主文件（账号/密钥/设置/模型）：内容未变则跳过；
-//  2. 统计旁路文件：仅在有新请求时写，只有几百字节；
-//  3. 日志：交给 logStore 的缓冲落盘。
+// Split into three parts, each with its own independent "unchanged" check:
+// 1. Main file (accounts/keys/settings/models): skipped if the content is unchanged;
+// 2. Stats side file: written only when there are new requests, only a few hundred bytes;
+// 3. Logs: handed off to logStore's buffered persist to disk.
 //
-// 序列化在锁外进行：号池有 653 个账号时一次 marshal 约 1MB，
-// 持读锁做这件事会顶住请求路径上的写锁（MarkAccountResult）。
+// Serialization happens outside the lock: with 653 accounts in the account pool, a single marshal is about 1MB,
+// doing this while holding the read lock would block the write lock on the request path (MarkAccountResult).
 func (s *Store) Save() error {
 	s.saveMu.Lock()
 	defer s.saveMu.Unlock()
@@ -200,7 +207,7 @@ func (s *Store) Save() error {
 		return err
 	}
 
-	// 1) 主文件。刚配置主密钥且磁盘上还是明文时必须重写一次。
+	// 1) Main file. Must be rewritten once when the master key was just configured and the file on disk is still plaintext.
 	if !bytes.Equal(plain, last) || (len(key) > 0 && !enc) {
 		if err := writeAtomicSealed(s.path, plain, key); err != nil {
 			return err
@@ -215,7 +222,7 @@ func (s *Store) Save() error {
 		s.mu.Unlock()
 	}
 
-	// 2) 统计。
+	// 2) Stats.
 	if statsDirty {
 		rawStats, err := json.Marshal(stats)
 		if err != nil {
@@ -227,22 +234,22 @@ func (s *Store) Save() error {
 		s.clearStatsDirtyIfUnchanged(stats)
 	}
 
-	// 3) 日志缓冲。
+	// 3) Log buffer.
 	return logs.Flush()
 }
 
-// saveTimestampGranularity 是运行态时间戳（LastUsed / Theos.CheckedAt）落盘时的精度（秒）。
+// saveTimestampGranularity is the precision (in seconds) used when persisting runtime timestamps (LastUsed / Theos.CheckedAt) to disk.
 //
-// 两者都会随每个请求或每次探测变化，秒级精度意味着「内容未变则跳过」在持续
-// 流量下永远失效：653 个账号的状态文件约 950KB，30s 一次重写就是
-// 约 115MB/h 的写放大。落盘时向下取整到 5 分钟，内存仍是秒级；
-// 代价只是重启后「最近使用 / 额度探测时间」精度降到 5 分钟。
+// Both change with every request or every probe; second-level precision means the "skip if content unchanged" check never
+// holds under sustained traffic: the state file for 653 accounts is about 950KB, and rewriting it every 30s means
+// about 115MB/h of write amplification. Round down to 5 minutes when persisting to disk; in-memory values remain second-level;
+// the only cost is that after a restart the "last used / quota probe time" precision drops to 5 minutes.
 const saveTimestampGranularity = 300
 
-// snapshotLocked 构造落盘快照。调用方必须持有读锁。
+// snapshotLocked builds the snapshot to persist. The caller must hold the read lock.
 //
-// 快照必须深拷贝所有会被就地修改的字段：Save 的序列化在锁外进行，
-// 复用活指针会让 ToggleKey / DeleteKey 与 marshal 撞车（-race 可见）。
+// The snapshot must deep-copy all fields that may be modified in place: Save's serialization happens outside the lock,
+// reusing live pointers would make ToggleKey / DeleteKey collide with marshal (visible under -race).
 func (s *Store) snapshotLocked() State {
 	snap := *s.st
 	snap.Accounts = make([]*deepai.Account, len(s.st.Accounts))
@@ -250,7 +257,7 @@ func (s *Store) snapshotLocked() State {
 		c := a.Clone()
 		c.LastUsed = quantizeTimestamp(c.LastUsed)
 		if c.Theos != nil {
-			// Clone 已复制 Allowance 结构体，这里改的是快照自己的副本。
+			// Clone has already copied the Allowance struct; what is modified here is the snapshot's own copy.
 			c.Theos.CheckedAt = quantizeTimestamp(c.Theos.CheckedAt)
 		}
 		snap.Accounts[i] = c
@@ -261,14 +268,14 @@ func (s *Store) snapshotLocked() State {
 		snap.Keys[i] = &c
 	}
 	snap.Models = cloneModels(s.st.Models)
-	// ModelAliases 是 map：深拷贝一份，保证锁外序列化不会被并发写撞上。
+	// ModelAliases is a map: make a deep copy so serialization outside the lock cannot race with concurrent writes.
 	if s.st.Settings.ModelAliases != nil {
 		snap.Settings.ModelAliases = maps.Clone(s.st.Settings.ModelAliases)
 	}
 	return snap
 }
 
-// cloneModels 复制模型目录（含 Input 切片与 TheosPerSecond map）。
+// cloneModels copies the model catalog (including the Input slice and TheosPerSecond map).
 func cloneModels(models []deepai.Model) []deepai.Model {
 	if models == nil {
 		return nil
@@ -286,7 +293,7 @@ func cloneModels(models []deepai.Model) []deepai.Model {
 	return out
 }
 
-// quantizeTimestamp 把运行态时间戳向下取整到落盘精度；0 / 负值原样返回。
+// quantizeTimestamp rounds the runtime timestamp down to disk-persistence precision; 0 / negative values are returned as-is.
 func quantizeTimestamp(t int64) int64 {
 	if t <= 0 {
 		return t
@@ -294,11 +301,11 @@ func quantizeTimestamp(t int64) int64 {
 	return t - t%saveTimestampGranularity
 }
 
-// clearStatsDirtyIfUnchanged 只在「写出的快照仍是当前统计」时清脏。
+// clearStatsDirtyIfUnchanged clears the dirty flag only when the written snapshot is still the current stats.
 //
-// Save 取快照与落盘之间可能插入 Record：直接置 false 会吞掉那次自增，
-// 让最后一条统计只在内存里（进程随后退出就丢）。Stats 全字段可比较，
-// 用它精确定界即可。
+// A Record may be inserted between Save taking the snapshot and persisting to disk: directly setting it to false would swallow that increment,
+// leaving the last stats entry only in memory (lost if the process exits afterward). All Stats fields are comparable,
+// so use it to define the boundary precisely.
 func (s *Store) clearStatsDirtyIfUnchanged(written Stats) {
 	s.mu.Lock()
 	if s.st.Stats == written {
@@ -307,12 +314,12 @@ func (s *Store) clearStatsDirtyIfUnchanged(written Stats) {
 	s.mu.Unlock()
 }
 
-// SaveCounters 返回主文件实际写盘次数与明文字节数（用于观测写放大）。
+// SaveCounters returns the actual number of writes to the main file and the plaintext byte count (for observing write amplification).
 func (s *Store) SaveCounters() (saves, bytes int64) {
 	return s.savesTotal.Load(), s.savedBytes.Load()
 }
 
-// writeAtomicSealed 以「唯一临时文件 + fsync + rename」原子写入，必要时整体加密。
+// writeAtomicSealed writes atomically using a unique temp file + fsync + rename, encrypting the whole file when necessary.
 func writeAtomicSealed(path string, plain, key []byte) error {
 	raw := plain
 	if len(key) > 0 {
@@ -326,20 +333,20 @@ func writeAtomicSealed(path string, plain, key []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// 临时文件名必须唯一：早期实现固定用 <path>.tmp，两个写入方
-	// （并发 Save，或误起的第二个网关实例）会互相截断。
+	// The temp file name must be unique: an early implementation always used <path>.tmp, so two writers
+	// (concurrent Save, or an accidentally started second gateway instance) would truncate each other.
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }() // rename 成功后是 no-op
+	defer func() { _ = os.Remove(tmp) }() // After a successful rename, it is a no-op.
 
 	if _, err := f.Write(raw); err != nil {
 		_ = f.Close()
 		return err
 	}
-	// 先 fsync 再 rename：否则掉电可能留下「名字已换、内容为空」的文件。
+	// fsync before rename: otherwise a power loss may leave a file whose name has been swapped but whose contents are empty.
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		return err
@@ -350,17 +357,17 @@ func writeAtomicSealed(path string, plain, key []byte) error {
 	return os.Rename(tmp, path)
 }
 
-// Encrypted 报告磁盘上的状态文件是否为加密格式。
+// Encrypted reports whether the state file on disk is in encrypted format.
 //
-// 注意：配置了主密钥但还没保存过时，磁盘上依然是明文，
-// 此时本方法返回 false（用 MasterKeySet 判断是否已配置加密）。
+// Note: if a master key is configured but nothing has been saved yet, the file on disk is still plaintext,
+// in which case this method returns false (use MasterKeySet to determine whether encryption has been configured).
 func (s *Store) Encrypted() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.encrypted
 }
 
-// MasterKeySet 报告是否已配置主密钥（配置后每次 Save 都会加密）。
+// MasterKeySet reports whether a master key has been configured (once configured, every Save encrypts).
 func (s *Store) MasterKeySet() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

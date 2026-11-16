@@ -12,7 +12,7 @@ import (
 	"deepaicode2api/internal/pool"
 )
 
-// newStore 在临时目录里打开一个空状态文件。
+// newStore opens an empty state file in a temporary directory.
 func newStore(t *testing.T) *Store {
 	t.Helper()
 	st, err := Open(filepath.Join(t.TempDir(), "state.json"))
@@ -82,8 +82,8 @@ func TestSaveAndReopenRoundTrip(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// 状态文件必须只有属主可读写（仅 Unix 生效：Windows 上 os.WriteFile 的
-	// mode 位不起作用，无法靠 chmod 收窄 ACL，需要加密兜底）。
+	// The state file must be readable and writable only by the owner (Unix only: on Windows the mode bits of os.WriteFile
+	// have no effect, and ACLs cannot be narrowed via chmod, so encryption is needed as a fallback).
 	if runtime.GOOS != "windows" {
 		if fi, err := os.Stat(path); err == nil {
 			if perm := fi.Mode().Perm(); perm&0o077 != 0 {
@@ -121,7 +121,7 @@ func TestSaveIsAtomic(t *testing.T) {
 	if err := st.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	// 临时文件必须已被 rename 掉，不能留下 .tmp。
+	// The temporary file must have been renamed away; no .tmp may be left behind.
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Fatalf("残留临时文件: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-same", "")
 
-	// 同一 Key 再导入 → 更新而非新增，且 ID 保持不变。
+	// Importing the same Key again → update rather than insert, and the ID stays unchanged.
 	again := &deepai.Account{APIKey: "sk-same", Name: "renamed"}
 	if st.UpsertAccount(again) {
 		t.Fatal("同 Key 应为更新")
@@ -150,7 +150,7 @@ func TestUpsertDedupesByKeyAndEmail(t *testing.T) {
 		t.Fatalf("账号数 = %d，期望 1", got)
 	}
 
-	// 邮箱相同、Key 已轮换 → 仍视为同一账号。
+	// Same email, Key rotated → still treated as the same account.
 	rotated := &deepai.Account{APIKey: "sk-new", Email: "x@y.com"}
 	st.UpsertAccount(rotated)
 	sameEmailAcct := &deepai.Account{APIKey: "sk-newer", Email: "X@Y.com"}
@@ -168,7 +168,7 @@ func TestUpsertPreservesRuntimeState(t *testing.T) {
 	st.MarkAccountResult(a.ID, false, "boom")
 	st.SetAccountAllowance(a.ID, &deepai.Allowance{Balance: "3"}, nil)
 
-	// 重新导入（例如桌面端换了 Key）不应清空故障计数与配额缓存。
+	// Re-importing (e.g. the desktop client switched Keys) must not clear the failure count or the quota cache.
 	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", Name: "n"})
 	got := st.Account(a.ID)
 	if got == nil {
@@ -196,7 +196,7 @@ func TestNextAccountRotationIsFair(t *testing.T) {
 		}
 		seen[a.APIKey]++
 	}
-	// 轮询：30 次请求应被 3 个账号均分。
+	// Rotation: 30 requests should be split evenly across 3 accounts.
 	for _, k := range []string{"sk-a", "sk-b", "sk-c"} {
 		if seen[k] != 10 {
 			t.Errorf("账号 %s 被选中 %d 次，期望 10；分布=%v", k, seen[k], seen)
@@ -211,7 +211,7 @@ func TestNextAccountSkipsFailedAndDisabled(t *testing.T) {
 	off := addAccount(t, st, "sk-off", "")
 
 	st.MarkAccountResult(bad.ID, false, "api down")
-	// 与 /admin/api/accounts 的启停一致：写路径统一走 UpdateAccount。
+	// Consistent with the enable/disable of /admin/api/accounts: write paths all go through UpdateAccount.
 	st.UpdateAccount(off.ID, func(x *deepai.Account) { x.Enabled = false })
 
 	for i := 0; i < 10; i++ {
@@ -222,7 +222,7 @@ func TestNextAccountSkipsFailedAndDisabled(t *testing.T) {
 }
 
 func TestNextAccountFallsBackWhenAllFailed(t *testing.T) {
-	// 全组都失败时不能返回 nil：宁可把请求打出去，也不要硬阻塞。
+	// When the whole group fails, do not return nil: better to send the request out than to hard-block.
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
 	addAccount(t, st, "sk-2", "")
@@ -247,7 +247,7 @@ func TestNextAccountGroupIsolation(t *testing.T) {
 	if got := st.NextAccountGroup("missing"); got != nil {
 		t.Fatalf("不存在的分组应返回 nil，实际 %#v", got)
 	}
-	// 空分组等价于“全部分组”。
+	// An empty group is equivalent to "all groups".
 	if got := st.NextAccountGroup(""); got == nil {
 		t.Fatal("空分组应匹配全部账号")
 	}
@@ -312,7 +312,7 @@ func TestKeysLifecycle(t *testing.T) {
 		t.Fatal("未知密钥的 KeyGroup 应为空")
 	}
 
-	// 改绑分组：保持密钥值不变；空分组归到 default。
+	// Rebinding the group: keep the key value unchanged; an empty group falls back to default.
 	if !st.SetKeyGroup(k.Key, "default") {
 		t.Fatal("SetKeyGroup 应找到已存在的密钥")
 	}
@@ -329,7 +329,7 @@ func TestKeysLifecycle(t *testing.T) {
 		t.Fatal("改绑不应影响密钥数量或值")
 	}
 
-	// 计数：ValidKey 会累加使用次数。
+	// Counting: ValidKey increments the usage count.
 	k2 := st.Keys()[0]
 	if k2.Requests != 1 || k2.LastUsed == 0 {
 		t.Fatalf("用量未累计: %#v", k2)
@@ -373,7 +373,7 @@ func TestRecordTrimsLogs(t *testing.T) {
 	if len(logs) != 3 {
 		t.Fatalf("日志应被裁剪到 3 条，实际 %d", len(logs))
 	}
-	// 保留的应是最新的。
+	// The newest one should be kept.
 	if st.Stats().TotalRequests != 10 {
 		t.Fatalf("统计不应被裁剪，实际 %d", st.Stats().TotalRequests)
 	}
@@ -391,8 +391,8 @@ func TestRecordCountsFailures(t *testing.T) {
 
 func TestModelCatalog(t *testing.T) {
 	st := newStore(t)
-	// 未拉取目录时 DefaultModel 为空；兜底由 server.resolveModel 负责
-	// （catalog 空 → deepai.DefaultModelEntry）。
+	// When the catalog has not been fetched, DefaultModel is empty; the fallback is handled by server.resolveModel
+	// (empty catalog → deepai.DefaultModelEntry).
 	if got := st.DefaultModel(); got != "" {
 		t.Fatalf("未设置目录时 DefaultModel 应为空，实际 %q", got)
 	}
@@ -407,7 +407,7 @@ func TestModelCatalog(t *testing.T) {
 		t.Fatalf("模型数 = %d", len(st.Models()))
 	}
 
-	// def 为空时回落到目录首项；已有默认值时不被空覆盖。
+	// When def is empty, fall back to the first catalog entry; an existing default is not overwritten by an empty value.
 	st2 := newStore(t)
 	st2.SetModels([]deepai.Model{{ID: "first"}}, "")
 	if st2.DefaultModel() != "first" {
@@ -429,7 +429,7 @@ func TestSettingsSnapshotIsCopy(t *testing.T) {
 	snap := st.Settings()
 	snap.ModelAliases["a"] = "mutated"
 
-	// map 是引用类型，必须被拷贝；标量字段由 Go 的值语义保证。
+	// map is a reference type and must be copied; scalar fields are guaranteed by Go's value semantics.
 	if fresh := st.Settings(); fresh.ModelAliases["a"] != "b" {
 		t.Fatal("Settings 返回的别名表应与内部状态隔离")
 	}
@@ -439,7 +439,7 @@ func TestSettingsSnapshotIsCopy(t *testing.T) {
 }
 
 func TestConcurrentAccessIsRaceFree(t *testing.T) {
-	// 配合 -race 跑：号池调度、密钥校验、日志写入、save 并发。
+	// Run with -race: account pool scheduling, key validation, log writes, and concurrent save.
 	st := newStore(t)
 	for _, k := range []string{"sk-a", "sk-b"} {
 		addAccount(t, st, k, "")
@@ -470,8 +470,8 @@ func TestConcurrentAccessIsRaceFree(t *testing.T) {
 }
 
 func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
-	// 上游按机器发每日额度，池里常有 balance=0 的账号；
-	// 有额度的账号应被优先选中，避免每次都先被上游拒一次。
+	// The upstream issues a daily quota per machine, so the pool often contains accounts with balance=0;
+	// Accounts with quota should be selected first, so we don't get rejected by the upstream once every time.
 	st := newStore(t)
 	empty := addAccount(t, st, "sk-empty", "")
 	full := addAccount(t, st, "sk-full", "")
@@ -488,7 +488,7 @@ func TestNextAccountPrefersAccountsWithQuota(t *testing.T) {
 }
 
 func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
-	// 全组都是 0 额度时不能返回 nil，否则请求直接失败。
+	// When the whole group has 0 quota, do not return nil, otherwise the request fails outright.
 	st := newStore(t)
 	a := addAccount(t, st, "sk-a", "")
 	b := addAccount(t, st, "sk-b", "")
@@ -502,7 +502,7 @@ func TestNextAccountFallsBackToZeroQuota(t *testing.T) {
 }
 
 func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
-	// 未探测 / 解析不了 / 免费额度关闭，都不能算“没额度”。
+	// Not probed / unparseable / free quota disabled must not be treated as "no quota".
 	cases := []*deepai.Allowance{
 		nil,
 		{Enabled: true, Balance: "abc"},
@@ -522,17 +522,17 @@ func TestNextAccountUnknownQuotaIsUsable(t *testing.T) {
 func TestUpsertPreservesMachineID(t *testing.T) {
 	st := newStore(t)
 	a := addAccount(t, st, "sk-1", "")
-	// 号池不再对外交付活指针，改字段必须走 UpdateAccount。
+	// The account pool no longer hands out live pointers externally; field changes must go through UpdateAccount.
 	st.UpdateAccount(a.ID, func(x *deepai.Account) { x.MachineID = "machine-keep" })
 
-	// 重新导入（例如桌面端刷新了 Key）不应清掉机器指纹，
-	// 否则该账号在上游的额度归属会断掉。
+	// Re-importing (e.g. the desktop client refreshed the Key) should not clear the machine fingerprint,
+	// otherwise the account's quota attribution on the upstream will break.
 	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", Name: "n"})
 	if got := st.Account(a.ID); got.MachineID != "machine-keep" {
 		t.Fatalf("机器指纹被清空: %q", got.MachineID)
 	}
 
-	// 新值非空时应可以覆盖。
+	// A non-empty new value should be allowed to overwrite.
 	st.UpsertAccount(&deepai.Account{APIKey: "sk-1", MachineID: "machine-new"})
 	if got := st.Account(a.ID); got.MachineID != "machine-new" {
 		t.Fatalf("新指纹未生效: %q", got.MachineID)
@@ -540,7 +540,7 @@ func TestUpsertPreservesMachineID(t *testing.T) {
 }
 
 func TestSaveSkipsUnchangedWrites(t *testing.T) {
-	// 后台每 30s 一次 Save；内容没变时不应反复重写整个状态文件。
+	// Background Save every 30s; when the content is unchanged, the whole state file should not be rewritten repeatedly.
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
 	if err != nil {
@@ -555,7 +555,7 @@ func TestSaveSkipsUnchangedWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 内容不变 → 跳过（mtime 不变）。
+	// Content unchanged → skip (mtime unchanged).
 	time.Sleep(10 * time.Millisecond)
 	if err := st.Save(); err != nil {
 		t.Fatalf("二次 Save: %v", err)
@@ -568,7 +568,7 @@ func TestSaveSkipsUnchangedWrites(t *testing.T) {
 		t.Fatal("内容未变化时不应重写文件")
 	}
 
-	// 内容变化 → 必须落盘。
+	// Content changed → must persist to disk.
 	st.AddKey("new", "")
 	if err := st.Save(); err != nil {
 		t.Fatalf("变更后 Save: %v", err)
@@ -590,7 +590,7 @@ func TestSaveSkipsUnchangedWrites(t *testing.T) {
 }
 
 func TestZeroQuotaGoesStale(t *testing.T) {
-	// 注册瞬间的 0 额度不能把账号永久判死；陈旧的 0 要重新被视为“未知”。
+	// A 0 quota at the moment of registration must not permanently condemn the account; a stale 0 must be treated as "unknown" again.
 	now := time.Now().Unix()
 
 	fresh := &deepai.Account{ID: "a", Enabled: true,
@@ -606,7 +606,7 @@ func TestZeroQuotaGoesStale(t *testing.T) {
 		t.Fatal("超过时限的 0 额度应视为未知（允许重探）")
 	}
 
-	// 没有探测时间戳的 0：按未知处理。
+	// A 0 with no probe timestamp: treat as unknown.
 	noStamp := &deepai.Account{ID: "c", Enabled: true,
 		Theos: &deepai.Allowance{Enabled: true, Balance: "0"}}
 	if !pool.HasQuota(noStamp) {
@@ -615,7 +615,7 @@ func TestZeroQuotaGoesStale(t *testing.T) {
 }
 
 func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
-	// 端到端：陈旧的 0 额度账号必须能被调度到。
+	// End-to-end: a stale 0-quota account must be schedulable.
 	st := newStore(t)
 	a := addAccount(t, st, "sk-stale", "")
 	st.SetAccountAllowance(a.ID, &deepai.Allowance{
@@ -627,11 +627,11 @@ func TestStaleZeroQuotaIsSchedulable(t *testing.T) {
 	}
 }
 
-// TestRecordClientGoneIsNotFailure 守住 499 的计数语义。
+// TestRecordClientGoneIsNotFailure guards the counting semantics of 499.
 //
-// 客户端断开（关标签页 / SDK 取消）以前被记成 502 并计入 failed_requests：
-// 线上实测 4 条 502 里有 3 条是这种，失败率于是被抬高、还看不出上游到底稳不稳。
-// 现在 499 只进日志、不进失败数（也不进成功数——它两头都不是）。
+// Client disconnect (closing the tab / SDK cancellation) used to be recorded as 502 and counted in failed_requests:
+// In production, 3 of 4 measured 502s were this case, which inflated the failure rate and made it impossible to tell whether the upstream was actually stable.
+// Now 499 only goes to the logs and is not counted as a failure (nor as a success - it is neither).
 func TestRecordClientGoneIsNotFailure(t *testing.T) {
 	st := newStore(t)
 	st.Record(LogEntry{Status: 200}, 1)
@@ -643,17 +643,17 @@ func TestRecordClientGoneIsNotFailure(t *testing.T) {
 	if s.FailedRequests != 0 {
 		t.Fatalf("FailedRequests = %d，期望 0（499 不计失败）", s.FailedRequests)
 	}
-	// 日志里仍要能看到这一条，否则「客户端走了」会变成无声的黑洞。
+	// The log entry must still be visible, otherwise "the client left" becomes a silent black hole.
 	if logs := st.QueryLogs(QueryFilter{Limit: 10}); len(logs) != 2 {
 		t.Fatalf("日志条数 = %d，期望 2", len(logs))
 	}
 }
 
-// TestStatsDayCachedTokens 守住「当日缓存命中率」的分子。
+// TestStatsDayCachedTokens guards the numerator of the "daily cache hit rate".
 //
-// 控制台的命中率原来用 total_cached_tokens / total_tokens_in（累计 / 累计），
-// 与「今日 Token 入」并排显示时像个今日指标，其实永远滞后。要有当日口径，
-// 就必须同时按天累计 cached，并在跨天时清零。
+// The console's hit rate used to be total_cached_tokens / total_tokens_in (cumulative / cumulative),
+// When displayed alongside the "today's token input" metric, it looks like a today metric, but it is always lagging. To have a same-day basis,
+// cached must also be accumulated per day and reset to zero when crossing days.
 func TestStatsDayCachedTokens(t *testing.T) {
 	st := newStore(t)
 	st.Record(LogEntry{Status: 200, TokensIn: 100, CachedTokens: 80}, 0)
@@ -666,7 +666,7 @@ func TestStatsDayCachedTokens(t *testing.T) {
 		t.Fatalf("累计 token 统计错误: in=%d cached=%d", s.TotalTokensIn, s.TotalCachedTokens)
 	}
 
-	// 模拟跨天：把日期键改成昨天，下一次 Record 应把当日计数（含 cached）清零。
+	// Simulate crossing days: change the date key to yesterday; the next Record should reset the day's count (including cached) to zero.
 	st.mu.Lock()
 	st.st.Stats.Day = "2000-01-01"
 	st.st.Stats.DayTokensIn = 999

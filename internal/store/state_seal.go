@@ -14,35 +14,38 @@ import (
 	"strings"
 )
 
-// 状态文件封装。
+// State file envelope.
 //
-// 状态文件里有上游 Api-Key、网页账号密码与网关密钥；文件权限 0600 只在
-// Unix 上有效（Windows 的 os.WriteFile 不设 ACL），所以支持可选的整文件加密：
+// The state file contains upstream Api-Key values, web account passwords, and
+// gateway keys; file permission 0600 is only effective on Unix (os.WriteFile on
+// Windows does not set ACLs), so optional whole-file encryption is supported:
 //
-//	v1（历史格式，裸 JSON）  {"accounts":[...],...}
-//	v2（加密格式）           {"v":2,"alg":"aes-256-gcm","nonce":"…","ct":"…"}
+//	v1 (legacy format, bare JSON)  {"accounts":[...],...}
 //
-// 读到 v1 且已配置主密钥时，下一次 Save 会自动写成 v2；未配置主密钥时
-// 保持 v1 不变（不破坏既有部署）。
+// v2 (encrypted format) {"v":2,"alg":"aes-256-gcm","nonce":"...","ct":"..."}
+//
+// When v1 is read and a master key is configured, the next Save automatically
+// writes v2; when no master key is configured it stays v1 (without breaking
+// existing deployments).
 const (
 	sealVersion = 2
 	sealAlg     = "aes-256-gcm"
 
-	// EnvMasterKey 是状态文件加密主密钥的环境变量名。
+	// EnvMasterKey is the environment variable name for the state file encryption master key.
 	EnvMasterKey = "DEEPAI2API_MASTER_KEY"
 
 	aes256KeyLen = 32
 )
 
-// 封装层可能出现的错误。
+// Errors that may occur in the envelope layer.
 var (
-	// ErrKeyRequired 表示文件已加密但未提供主密钥。
+	// ErrKeyRequired means the file is encrypted but no master key was provided.
 	ErrKeyRequired = errors.New("状态文件已加密，但未设置 " + EnvMasterKey)
-	// ErrKeyMismatch 表示主密钥不匹配（解密后 GCM 校验失败）。
+	// ErrKeyMismatch means the master key does not match (GCM verification fails after decryption).
 	ErrKeyMismatch = errors.New("主密钥不匹配，无法解密状态文件")
 )
 
-// sealEnvelope 是加密状态文件的外层结构。
+// sealEnvelope is the outer structure of an encrypted state file.
 type sealEnvelope struct {
 	V     int    `json:"v"`
 	Alg   string `json:"alg"`
@@ -50,7 +53,8 @@ type sealEnvelope struct {
 	CT    string `json:"ct"`
 }
 
-// ParseMasterKey 解析主密钥：支持 64 位 hex 或 44 位 base64，必须解出 32 字节。
+// ParseMasterKey parses the master key: accepts 64 hex characters or 44 base64
+// characters, and must decode to 32 bytes.
 func ParseMasterKey(raw string) ([]byte, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -69,12 +73,13 @@ func ParseMasterKey(raw string) ([]byte, error) {
 	return nil, fmt.Errorf("%s 必须是 32 字节（64 位 hex 或 base64），可用 openssl rand -hex 32 生成", EnvMasterKey)
 }
 
-// MasterKeyFromEnv 从环境变量读取主密钥（未设置时返回 nil）。
+// MasterKeyFromEnv reads the master key from the environment (returns nil when
+// not set).
 func MasterKeyFromEnv() ([]byte, error) {
 	return ParseMasterKey(os.Getenv(EnvMasterKey))
 }
 
-// isEnvelope 判断原始文件内容是否为加密封装。
+// isEnvelope reports whether the raw file content is an encrypted envelope.
 func isEnvelope(raw []byte) bool {
 	var probe sealEnvelope
 	if json.Unmarshal(raw, &probe) != nil {
@@ -83,16 +88,18 @@ func isEnvelope(raw []byte) bool {
 	return probe.V == sealVersion && probe.Alg != ""
 }
 
-// seal 加密明文状态（缩进格式，便于人工确认外层结构）。
+// seal encrypts plaintext state (indented format, so the outer structure is easy
+// to inspect by eye).
 func seal(key, plain []byte) ([]byte, error) {
 	return sealWithIndent(key, plain, true)
 }
 
-// sealLine 加密一行日志，产出**单行**信封。
+// sealLine encrypts one line of a log and produces a **single-line** envelope.
 //
-// 日志是 JSONL：读取端按 \n 切分。seal 的缩进格式会把一条记录拆成多行，
-// 写入后 decodeLine 永远解析不出来（表现为“加密开启后日志重启即丢”）。
-// 因此日志必须走紧凑序列化。
+// Logs are JSONL: the reader splits on \n. seal's indented format would split a
+// record across multiple lines; once written, decodeLine could never parse it
+// (manifesting as "logs are lost on restart once encryption is enabled"). Logs
+// must therefore use compact serialization.
 func sealLine(key, plain []byte) ([]byte, error) {
 	return sealWithIndent(key, plain, false)
 }
@@ -119,10 +126,11 @@ func sealWithIndent(key, plain []byte, indent bool) ([]byte, error) {
 	return json.Marshal(env)
 }
 
-// unseal 解密状态文件内容。
+// unseal decrypts state file content.
 //
-// 返回值 encrypted 表示该文件原本是加密格式；plain 是明文字节。
-// 明文（v1）文件直接原样返回。
+// The returned encrypted value indicates whether the file was originally in
+// encrypted format; plain is the plaintext bytes. Plaintext (v1) files are
+// returned as-is.
 func unseal(key, raw []byte) (plain []byte, encrypted bool, err error) {
 	if !isEnvelope(raw) {
 		return raw, false, nil
@@ -154,16 +162,19 @@ func unseal(key, raw []byte) (plain []byte, encrypted bool, err error) {
 	}
 	opened, err := gcm.Open(nil, nonce, ct, nil)
 	if err != nil {
-		// GCM 校验失败几乎总是密钥不对，给出可执行的提示而不是底层错误。
+		// GCM verification failure almost always means the wrong key; give an
+		// actionable hint instead of the underlying error.
 		return nil, true, ErrKeyMismatch
 	}
 	return opened, true, nil
 }
 
-// MasterKeyFingerprint 返回主密钥的短指纹（sha256 前 4 字节，8 位 hex）。
+// MasterKeyFingerprint returns a short fingerprint of the master key (first 4
+// bytes of sha256, 8 hex characters).
 //
-// 用于启动日志与 -seal 输出：用户可据此确认「这次用的是哪把钥匙」，
-// 又不至于把密钥本身写进日志。未配置主密钥时返回空串。
+// Used in startup logs and -seal output: users can confirm "which key was used
+// this time" without writing the key itself to the logs. Returns an empty string
+// when no master key is configured.
 func (s *Store) MasterKeyFingerprint() string {
 	if len(s.masterKey) == 0 {
 		return ""

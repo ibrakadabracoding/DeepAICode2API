@@ -32,17 +32,17 @@ func TestParseMasterKey(t *testing.T) {
 		t.Fatalf("空白应视为未配置: %v %v", got, err)
 	}
 
-	// 64 位 hex
+	// 64 hex characters
 	hexKey := hex.EncodeToString(key)
 	got, err := ParseMasterKey(hexKey)
 	if err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("hex 解析失败: %v %x", err, got)
 	}
-	// 大小写 hex 都应接受
+	// Both uppercase and lowercase hex should be accepted
 	if got, err := ParseMasterKey(strings.ToUpper(hexKey)); err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("大写 hex 解析失败: %v", err)
 	}
-	// 各种 base64 变体
+	// Various base64 variants
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding,
 	} {
@@ -51,12 +51,12 @@ func TestParseMasterKey(t *testing.T) {
 			t.Fatalf("base64（%v）解析失败: %v", enc, err)
 		}
 	}
-	// 首尾空白应被裁剪（.env 里常带换行）
+	// Leading and trailing whitespace should be trimmed (.env files often contain newlines)
 	if got, err := ParseMasterKey(" " + hexKey + "\n"); err != nil || !bytes.Equal(got, key) {
 		t.Fatalf("带空白的主密钥解析失败: %v", err)
 	}
 
-	// 错误用例
+	// Error cases
 	for _, bad := range []string{"short", strings.Repeat("a", 63), hex.EncodeToString(make([]byte, 16))} {
 		if _, err := ParseMasterKey(bad); err == nil {
 			t.Errorf("%q 应被拒绝", bad)
@@ -97,7 +97,7 @@ func TestSealUnsealRoundTrip(t *testing.T) {
 		t.Fatalf("往返不一致:\n got=%s\nwant=%s", got, plain)
 	}
 
-	// 每次加密的 nonce 必须不同（否则 GCM 复用 nonce 会致命）。
+	// The nonce must differ on every encryption (reusing a nonce in GCM is fatal).
 	again, _ := seal(key, plain)
 	if bytes.Equal(sealed, again) {
 		t.Fatal("两次加密产生了相同密文（nonce 未随机化）")
@@ -128,7 +128,7 @@ func TestUnsealRequiresKey(t *testing.T) {
 }
 
 func TestUnsealPlainJSON(t *testing.T) {
-	// v1 裸 JSON 必须继续可读，且不报错。
+	// v1 bare JSON must remain readable and must not error.
 	plain := []byte(`{"accounts":[],"settings":{}}`)
 	got, encrypted, err := unseal(testKey(), plain)
 	if err != nil {
@@ -153,7 +153,7 @@ func TestUnsealTamperedCiphertext(t *testing.T) {
 		t.Fatal(err)
 	}
 	ct, _ := base64.StdEncoding.DecodeString(env.CT)
-	ct[0] ^= 0xFF // 翻转一字节
+	ct[0] ^= 0xFF // flip one byte
 	env.CT = base64.StdEncoding.EncodeToString(ct)
 	tampered, _ := json.Marshal(env)
 
@@ -180,7 +180,7 @@ func TestOpenWithKeyEncryptsOnSave(t *testing.T) {
 		t.Fatal("Encrypted() 应为 true")
 	}
 
-	// 磁盘上不应出现明文密钥。
+	// No plaintext key should appear on disk.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestOpenWithKeyEncryptsOnSave(t *testing.T) {
 		t.Fatalf("落盘内容不是加密封装:\n%s", raw)
 	}
 
-	// 用同一密钥可重新打开。
+	// Reopen with the same key.
 	back, err := OpenWithKey(path, key)
 	if err != nil {
 		t.Fatalf("重新打开失败: %v", err)
@@ -218,17 +218,18 @@ func TestOpenEncryptedWithoutKeyFails(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// 没给密钥就打开：必须报错而不是当成空状态覆盖掉（那会丢光号池）。
+	// Opening without a key must error rather than treat it as empty state and
+	// overwrite it (which would wipe the entire account pool).
 	if _, err := OpenWithKey(path, nil); !errors.Is(err, ErrKeyRequired) {
 		t.Fatalf("缺密钥应返回 ErrKeyRequired，实际 %v", err)
 	}
-	// 给了错密钥同样必须报错。
+	// A wrong key must error as well.
 	wrong := make([]byte, 32)
 	wrong[1] = 9
 	if _, err := OpenWithKey(path, wrong); !errors.Is(err, ErrKeyMismatch) {
 		t.Fatalf("错密钥应返回 ErrKeyMismatch，实际 %v", err)
 	}
-	// 文件不能被破坏。
+	// The file must not be damaged.
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("状态文件不应丢失: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestOpenMigratesPlaintextToEncrypted(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 	key := testKey()
 
-	// 先用明文写出一份历史格式状态。
+	// First write a legacy-format state file as plaintext.
 	plain, err := OpenWithKey(path, nil)
 	if err != nil {
 		t.Fatalf("OpenWithKey(nil): %v", err)
@@ -253,7 +254,8 @@ func TestOpenMigratesPlaintextToEncrypted(t *testing.T) {
 		t.Fatal("未配置密钥时不应加密")
 	}
 
-	// 再配置密钥打开：读得出来，保存后变成加密格式。
+	// Then open with a key configured: it can be read, and saving converts it to
+	// encrypted format.
 	st, err := OpenWithKey(path, key)
 	if err != nil {
 		t.Fatalf("迁移读取失败: %v", err)
@@ -299,7 +301,8 @@ func TestOpenRejectsBadMasterKeyEnv(t *testing.T) {
 }
 
 func TestEncryptedFileHasNoKeyMaterial(t *testing.T) {
-	// 端到端：账号密码、上游 Key、网关 Key 都不应以明文出现在文件里。
+	// End to end: account passwords, upstream Keys, and gateway Keys must not
+	// appear in plaintext in the file.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	st, err := OpenWithKey(path, testKey())

@@ -10,34 +10,44 @@ import (
 	"sync"
 )
 
-// logMaxBytes 超过该大小就轮转：当前文件改名为 .1，旧的 .1 丢弃。
+// logMaxBytes triggers rotation once the file exceeds this size: the current
+// file is renamed to .1 and the old .1 is discarded.
 //
-// 日志只用于事后排障，轮转保留一代足够；不设无上限增长。
+// Logs are only used for post-mortem troubleshooting, so keeping one
+// generation of rotated files is enough; there is no unbounded growth.
 const logMaxBytes = 8 << 20
 
-// logStore 是 append-only 的请求日志文件（JSONL）+ 内存环形缓冲。
+// logStore is an append-only request log file (JSONL) plus an in-memory ring
+// buffer.
 //
-// 从主状态文件里拆出来的原因：日志每来一个请求就变一次，留在 State 里会让
-// Save 的「内容未变则跳过」永远失效 —— 后台 30s 一次的保存退化成整份
-// 1.1MB 状态文件的重写 + fsync（实测约 130MB/小时写放大）。
+// It was split out of the main state file because the log changes on every
+// request; keeping it inside State would permanently defeat Save's
+// "skip if content unchanged" check - the background save every 30s would
+// degrade into rewriting the entire 1.1MB state file plus fsync (measured at
+// roughly 130MB/hour of write amplification).
 //
-// 写入用「每次追加 open+write+close」而不是常驻句柄：
-//   - 常驻句柄在 Windows 上会阻止临时目录/日志文件被删除或重命名；
-//   - 网关的请求速率是个位数到几十 rps，一次 open/close 的开销可忽略；
-//   - 不需要缓冲刷盘逻辑，也不会在崩溃时丢最近的日志。
+// Writes use "open+write+close per append" rather than a long-lived handle:
+//   - a long-lived handle prevents temp directories/log files from being
+//     deleted or renamed on Windows;
+//   - the gateway's request rate is single-digit to tens of rps, so the cost of
+//     one open/close is negligible;
+//   - no buffer flush logic is needed, and the most recent logs are not lost on
+//     a crash.
 //
-// 配置主密钥时逐行加密：一行一个 seal 信封，与主状态文件同一密钥。
+// When a master key is configured, lines are encrypted one by one: one seal
+// envelope per line, using the same key as the main state file.
 type logStore struct {
 	path string
 	key  []byte
 
 	mu   sync.Mutex
-	size int64 // 当前文件大小（轮转判定用，open 时初始化）
+	size int64 // Current file size (used for rotation checks, initialized on open)
 	ring []LogEntry
 	keep int
 }
 
-// openLogStore 打开（或创建）日志文件，并把最近 keep 条读进内存环形缓冲。
+// openLogStore opens (or creates) the log file and loads the most recent keep
+// entries into the in-memory ring buffer.
 func openLogStore(path string, key []byte, keep int) (*logStore, error) {
 	l := &logStore{path: path, key: key, keep: keep}
 	if fi, err := os.Stat(path); err == nil {
@@ -49,7 +59,7 @@ func openLogStore(path string, key []byte, keep int) (*logStore, error) {
 	return l, nil
 }
 
-// loadTail 读取文件最近 keep 条日志填充环形缓冲。
+// loadTail reads the most recent keep entries from the file to fill the ring buffer.
 func (l *logStore) loadTail() error {
 	if l.keep <= 0 {
 		return nil
@@ -62,9 +72,10 @@ func (l *logStore) loadTail() error {
 	return nil
 }
 
-// append 追加一条日志：写文件 + 更新环形缓冲。
+// append appends one log entry: writes the file and updates the ring buffer.
 //
-// keep 由调用方按当前设置传入（LogKeep 可在控制台实时调整）。
+// keep is passed in by the caller based on the current setting (LogKeep can be
+// adjusted live from the console).
 func (l *logStore) append(e LogEntry, keep int) error {
 	raw, err := json.Marshal(e)
 	if err != nil {
@@ -92,7 +103,7 @@ func (l *logStore) append(e LogEntry, keep int) error {
 	return nil
 }
 
-// writeLocked 追加一行到文件（调用方持锁）。
+// writeLocked appends one line to the file (caller holds the lock).
 func (l *logStore) writeLocked(raw []byte) error {
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
 		return err
@@ -117,10 +128,10 @@ func (l *logStore) writeLocked(raw []byte) error {
 	return cerr
 }
 
-// Flush 是兼容旧调用点的空操作：写入不驻留缓冲。
+// Flush is a no-op kept for compatibility with old call sites: writes are not buffered.
 func (l *logStore) Flush() error { return nil }
 
-// tail 返回最近 limit 条日志（limit<=0 表示全部）。
+// tail returns the most recent limit log entries (limit<=0 means all).
 func (l *logStore) tail(limit int) []LogEntry {
 	if l == nil {
 		return nil
@@ -136,7 +147,8 @@ func (l *logStore) tail(limit int) []LogEntry {
 	return out
 }
 
-// query 在内存环形缓冲里过滤（快路径，覆盖最近 keep 条）。
+// query filters the in-memory ring buffer (fast path, covers the most recent
+// keep entries).
 func (l *logStore) query(f QueryFilter) []LogEntry {
 	if l == nil {
 		return nil
@@ -157,7 +169,7 @@ func (l *logStore) query(f QueryFilter) []LogEntry {
 	return out
 }
 
-// clear 清空内存缓冲并截断文件。
+// clear clears the in-memory buffer and truncates the file.
 func (l *logStore) clear() error {
 	if l == nil {
 		return nil
@@ -172,10 +184,12 @@ func (l *logStore) clear() error {
 	return nil
 }
 
-// scan 扫描日志文件并应用过滤（从新到旧，最多 limit 条）。
+// scan scans the log file and applies the filter (newest to oldest, at most
+// limit entries).
 //
-// 用于查询超出内存环形缓冲的历史：只读文件尾部（最多 4MB），
-// 避免一次大文件扫描把管理接口拖慢。
+// Used to query history beyond the in-memory ring buffer: it only reads the
+// tail of the file (up to 4MB) so a large file scan does not slow down the
+// admin API.
 func (l *logStore) scan(f QueryFilter) ([]LogEntry, error) {
 	const maxScan = 4 << 20
 
@@ -208,7 +222,7 @@ func (l *logStore) scan(f QueryFilter) ([]LogEntry, error) {
 		if line == "" {
 			continue
 		}
-		// 起始位置可能切在半行上：不是合法 JSON 就跳过。
+		// The start offset may cut a line in half: skip anything that is not valid JSON.
 		e, ok := l.decodeLine([]byte(line))
 		if !ok || !f.match(e) {
 			continue
@@ -225,7 +239,7 @@ func (l *logStore) scan(f QueryFilter) ([]LogEntry, error) {
 	return out, nil
 }
 
-// decodeLine 解析一行（配置主密钥时先解封）。
+// decodeLine parses one line (unseals first when a master key is configured).
 func (l *logStore) decodeLine(raw []byte) (LogEntry, bool) {
 	var e LogEntry
 	body := raw
@@ -248,21 +262,22 @@ func reverseLogEntries(xs []LogEntry) {
 	}
 }
 
-// QueryFilter 描述一次日志查询。
+// QueryFilter describes a log query.
 //
-// 只作用于内存环形缓冲（最近 LogKeep 条）或文件尾部，避免把管理接口
-// 变成长事务。所有条件都是「与」关系。
+// It only applies to the in-memory ring buffer (the most recent LogKeep entries)
+// or the tail of the file, avoiding a long transaction on the admin API. All
+// conditions are combined with AND.
 type QueryFilter struct {
-	// Limit 是最多返回条数（0 表示不限制，由调用方兜底）。
+	// Limit is the maximum number of entries to return (0 means unlimited; the caller applies a fallback).
 	Limit int
-	// Since 只保留该 unix 秒之后的日志（0 表示不限）。
+	// Since keeps only logs after this unix second (0 means no limit).
 	Since int64
-	// Endpoint / Account 按等值过滤（空串表示不限）。
+	// Endpoint / Account filter by exact match (empty string means no limit).
 	Endpoint string
 	Account  string
-	// MinStatus 只保留 status >= MinStatus 的日志（0 表示不限）。
+	// MinStatus keeps only logs with status >= MinStatus (0 means no limit).
 	MinStatus int
-	// Keyword 在 model 与 err 里做不区分大小写的子串匹配。
+	// Keyword does a case-insensitive substring match against model and err.
 	Keyword string
 }
 

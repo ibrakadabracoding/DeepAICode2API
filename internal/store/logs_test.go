@@ -11,7 +11,7 @@ import (
 	"deepaicode2api/internal/deepai"
 )
 
-// 日志应写入旁路文件、并可跨重启恢复。
+// Logs should be written to side files and survive a restart.
 func TestLogsPersistAcrossReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	st, err := Open(path)
@@ -38,7 +38,7 @@ func TestLogsPersistAcrossReopen(t *testing.T) {
 	}
 }
 
-// 主状态文件不应再包含 logs / stats；统计落到自己的小文件。
+// The main state file should no longer contain logs / stats; stats go to their own small file.
 func TestStateFileExcludesLogsAndStats(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -72,7 +72,7 @@ func TestStateFileExcludesLogsAndStats(t *testing.T) {
 	}
 }
 
-// 旧格式（logs/stats 内嵌在主文件）应被自动迁移。
+// The legacy format (logs/stats embedded in the main file) should be migrated automatically.
 func TestMigrateLegacyState(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -102,7 +102,7 @@ func TestMigrateLegacyState(t *testing.T) {
 		t.Fatalf("日志未迁移: %d", got)
 	}
 
-	// 主文件应已被重写为不含 logs/stats 的新格式。
+	// The main file should have been rewritten in the new format without logs/stats.
 	rewritten, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("重读主文件: %v", err)
@@ -111,7 +111,7 @@ func TestMigrateLegacyState(t *testing.T) {
 		t.Fatal("迁移后主文件仍含 logs/stats")
 	}
 
-	// 统计必须真的落到旁路文件：否则只活在内存里，下次重启就丢了。
+	// Stats must actually reach the side file: otherwise they live only in memory and are lost on the next restart.
 	statsPath, _ := deriveSidePaths(path)
 	if _, err := os.Stat(statsPath); err != nil {
 		t.Fatalf("迁移后缺少统计旁路文件: %v", err)
@@ -128,7 +128,7 @@ func TestMigrateLegacyState(t *testing.T) {
 	}
 }
 
-// QueryLogs 支持 since / endpoint / status / 关键词过滤。
+// QueryLogs supports since / endpoint / status / keyword filters.
 func TestQueryLogsFilters(t *testing.T) {
 	st := newStore(t)
 	st.Record(LogEntry{Time: 100, Endpoint: "chat", Status: 200, Model: "glm"}, 0)
@@ -152,7 +152,7 @@ func TestQueryLogsFilters(t *testing.T) {
 	}
 }
 
-// AccountPage 分页与过滤。
+// AccountPage pagination and filtering.
 func TestAccountPage(t *testing.T) {
 	st := newStore(t)
 	for i := 0; i < 25; i++ {
@@ -182,14 +182,14 @@ func TestAccountPage(t *testing.T) {
 	if page.Total != 1 {
 		t.Fatalf("关键词过滤: %d", page.Total)
 	}
-	// 越界 offset 不应 panic，返回空页。
+	// An out-of-range offset must not panic; it returns an empty page.
 	page = st.AccountPage(AccountQuery{Offset: 999, Limit: 10})
 	if len(page.Items) != 0 || page.Total != 26 {
 		t.Fatalf("越界: items=%d total=%d", len(page.Items), page.Total)
 	}
 }
 
-// 日志环形缓冲按 LogKeep 裁剪（内存语义保持）。
+// The log ring buffer is trimmed to LogKeep (in-memory semantics preserved).
 func TestLogsTrimmedToKeep(t *testing.T) {
 	st := newStore(t)
 	st.UpdateSettings(func(s *Settings) { s.LogKeep = 3 })
@@ -204,8 +204,8 @@ func TestLogsTrimmedToKeep(t *testing.T) {
 	}
 }
 
-// 排序必须由服务端做：分页切片前后都要有序，且相等值按 ID 兜底，
-// 否则同一批数据在翻页时会重复或漏条。
+// Sorting must be done server-side: the slice must be ordered both before and after pagination,
+// and equal values must fall back to ID, otherwise the same rows will repeat or go missing across pages.
 func TestAccountPageSorting(t *testing.T) {
 	st := newStore(t)
 	quota := []string{"5", "0", "9", ""}
@@ -221,7 +221,7 @@ func TestAccountPageSorting(t *testing.T) {
 		st.UpsertAccount(a)
 	}
 
-	// theos 升序：未知(-1) 在最前，然后 0、5、9。
+	// theos ascending: unknown (-1) first, then 0, 5, 9.
 	page := st.AccountPage(AccountQuery{Sort: "theos"})
 	got := []string{}
 	for _, a := range page.Items {
@@ -234,13 +234,13 @@ func TestAccountPageSorting(t *testing.T) {
 		}
 	}
 
-	// failures 降序。
+	// failures descending.
 	page = st.AccountPage(AccountQuery{Sort: "failures", Desc: true})
 	if page.Items[0].ID != "id3" {
 		t.Fatalf("failures 降序首条应为 id3，实际 %s", page.Items[0].ID)
 	}
 
-	// 分页稳定：逐页取回拼起来必须等于一次性取回。
+	// Pagination is stable: fetching page by page and concatenating must equal fetching all at once.
 	all := st.AccountPage(AccountQuery{Sort: "account"})
 	var paged []string
 	for off := 0; off < all.Total; off += 2 {
@@ -255,7 +255,7 @@ func TestAccountPageSorting(t *testing.T) {
 		}
 	}
 
-	// 未知排序字段不应改变结果，也不应 panic。
+	// An unknown sort field must not change the result or panic.
 	if p := st.AccountPage(AccountQuery{Sort: "nope"}); p.Total != 4 {
 		t.Fatalf("未知排序字段：total=%d", p.Total)
 	}
