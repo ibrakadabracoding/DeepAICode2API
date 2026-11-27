@@ -72,7 +72,8 @@ type Settings struct {
 	// 首次仍走「透传 → 400 → 补形状重试」的学习路径。
 	PresetDesktopShape bool `json:"preset_desktop_shape,omitempty"`
 
-	// ContextBodyBytes 是发往上游的请求体上限（字节，0 = 用默认 196608）。
+	// ContextBodyBytes 是发往上游的请求体上限（字节，0 = 关闭字节闸门，不再拦截
+	// 请求体；仅依赖 token 估算做上下文截断保护）。
 	//
 	// issue #7：上游约 196 KB 起会对请求体「静默砍头」（丢开头、保留尾部，
 	// usage.prompt_tokens 钉在 ~40k）。这个值是网关上唯一的量化闸门，

@@ -119,9 +119,11 @@ func (s Settings) Normalize() Settings {
 	if s.FirstByteSec <= 0 {
 		s.FirstByteSec = DefaultFirstByte
 	}
-	if s.ContextBodyBytes <= 0 {
-		s.ContextBodyBytes = DefaultContextBodyBytes
+	if s.ContextBodyBytes < 0 {
+		s.ContextBodyBytes = 0
 	}
+	// ContextBodyBytes == 0 表示关闭请求体字节闸门（issue #7 保护失效，回退到纯
+	// token 估算）。不再把 0 重写为默认值，让管理员可显式关闭。
 	// BodyCapMode：空值（旧状态文件 / 首次启动）等同于 warn，保持既有语义。
 	s.BodyCapMode = strings.ToLower(strings.TrimSpace(s.BodyCapMode))
 	if s.BodyCapMode == "" {
@@ -203,8 +205,10 @@ func (s Settings) validateBudgets() error {
 	if err := check("首字节超时", s.FirstByteSec, MinFirstByte, MaxFirstByte, "秒"); err != nil {
 		return err
 	}
-	if err := check("请求体上限", s.ContextBodyBytes, MinContextBodyBytes, MaxContextBodyBytes, "字节"); err != nil {
-		return err
+	if s.ContextBodyBytes == 0 {
+		// 0 = 关闭字节闸门，合法。
+	} else if s.ContextBodyBytes < MinContextBodyBytes || s.ContextBodyBytes > MaxContextBodyBytes {
+		return fmt.Errorf("请求体上限必须为 0（关闭）或 %d~%d 字节（当前 %d）", MinContextBodyBytes, MaxContextBodyBytes, s.ContextBodyBytes)
 	}
 	if s.BodyCapMode != BodyCapWarn && s.BodyCapMode != BodyCapReject {
 		return fmt.Errorf("请求体超限处置只能是 %q 或 %q（当前 %q）", BodyCapWarn, BodyCapReject, s.BodyCapMode)

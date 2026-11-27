@@ -84,13 +84,21 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 // 它们全部可以在控制台调，所以「0 = 未设置」必须补默认值、越界必须被拒、
 // reject 必须是合法模式——三者任何一条漏了，线上就会在不知情时换了语义。
 func TestBudgetSettingsDefaultsAndRange(t *testing.T) {
-	def := Settings{}.Normalize()
+	def := DefaultSettings().Normalize()
 	if def.ContextBodyBytes != DefaultContextBodyBytes {
 		t.Fatalf("ContextBodyBytes = %d，期望 %d", def.ContextBodyBytes, DefaultContextBodyBytes)
 	}
 	if def.BodyCapMode != BodyCapWarn {
 		t.Fatalf("BodyCapMode = %q，期望 %q（旧状态文件没有这个字段）", def.BodyCapMode, BodyCapWarn)
 	}
+
+	// 零值 Settings 的 ContextBodyBytes 为 0，表示关闭字节闸门；不再被 Normalize
+	// 重写为默认值。管理员可显式设为 0 关闭，或设为正值开启。
+	zero := Settings{}.Normalize()
+	if zero.ContextBodyBytes != 0 {
+		t.Fatalf("零值 ContextBodyBytes = %d，期望 0（0 = 关闭字节闸门）", zero.ContextBodyBytes)
+	}
+
 	if def.NonStreamBudget != DefaultNonStreamBudget || def.StreamIdleSec != DefaultStreamIdle || def.FirstByteSec != DefaultFirstByte {
 		t.Fatalf("预算默认值不对: %+v", def)
 	}
@@ -108,6 +116,13 @@ func TestBudgetSettingsDefaultsAndRange(t *testing.T) {
 	reject.BodyCapMode = BodyCapReject
 	if err := reject.Validate(); err != nil {
 		t.Fatalf("reject 应被接受: %v", err)
+	}
+
+	// ContextBodyBytes = 0 表示关闭字节闸门，应被 Validate 接受。
+	disabled := def
+	disabled.ContextBodyBytes = 0
+	if err := disabled.Validate(); err != nil {
+		t.Fatalf("ContextBodyBytes = 0（关闭字节闸门）应被 Validate 接受: %v", err)
 	}
 
 	cases := []struct {

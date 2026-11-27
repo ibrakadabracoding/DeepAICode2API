@@ -14,7 +14,7 @@ import (
 
 // TestBodyCapReached 覆盖 issue #7 的两种处置。
 func TestBodyCapReached(t *testing.T) {
-	base := store.Settings{}.Normalize()
+	base := store.DefaultSettings().Normalize()
 	big := bytes.Repeat([]byte("x"), base.ContextBodyBytes+1)
 	small := bytes.Repeat([]byte("x"), 1024)
 
